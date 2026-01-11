@@ -1,0 +1,115 @@
+#!/bin/bash
+
+# =========================================================
+# FanchmWrt 自定义编译脚本 (AX1800 Pro 专版)
+# =========================================================
+
+# --- 1. 基础函数定义 ---
+color() {
+    case $1 in
+        cr) echo -e "\e[1;31m$2\e[0m" ;;
+        cg) echo -e "\e[1;32m$2\e[0m" ;;
+        cb) echo -e "\e[1;34m$2\e[0m" ;;
+    esac
+}
+
+print_info() {
+    printf "%s %-40s %s %s %s\n" $1 $2 $3 $4 $5
+}
+
+git_clone() {
+    local repo_url branch target_dir
+    if [[ "$1" == */* ]]; then
+        repo_url="$1"
+        shift
+    else
+        branch="-b $1 --single-branch"
+        repo_url="$2"
+        shift 2
+    fi
+    if [[ -n "$@" ]]; then
+        target_dir="$@"
+    else
+        target_dir="${repo_url##*/}"
+    fi
+    target_dir="package/A/$target_dir"
+    git clone -q $branch --depth=1 $repo_url $target_dir 2>/dev/null || return 0
+    rm -rf $target_dir/{.git*,README*.md,LICENSE}
+    print_info $(color cb 添加) $target_dir [ $(color cb ✔) ]
+}
+
+clone_all() {
+    local repo_url branch temp_dir=$(mktemp -d)
+    if [[ "$1" == */* ]]; then
+        repo_url="$1"
+        shift
+    else
+        branch="-b $1 --single-branch"
+        repo_url="$2"
+        shift 2
+    fi
+    git clone -q $branch --depth=1 $repo_url $temp_dir 2>/dev/null
+    cp -rf $temp_dir/* package/A/ 2>/dev/null
+    print_info $(color cb 添加) "Whole Repo: $repo_url" [ $(color cb ✔) ]
+    rm -rf $temp_dir
+}
+
+# --- 2. 下载额外插件 ---
+mkdir -p package/A
+echo "正在下载插件..."
+
+# 常用工具
+git_clone https://github.com/sbwml/packages_lang_golang golang
+clone_all https://github.com/sbwml/luci-app-alist
+clone_all https://github.com/sbwml/luci-app-mosdns
+
+# 科学上网 (如果有冲突请注释掉)
+clone_all https://github.com/fw876/helloworld
+clone_all https://github.com/Openwrt-Passwall/openwrt-passwall-packages
+clone_all https://github.com/Openwrt-Passwall/openwrt-passwall
+clone_dir https://github.com/vernesong/OpenClash luci-app-openclash
+
+# 主题
+git_clone https://github.com/jerrykuku/luci-theme-argon
+git_clone https://github.com/jerrykuku/luci-app-argon-config
+
+# --- 3. 核心配置：锁定 JDCloud AX1800 Pro ---
+# 这一步非常重要，它告诉编译系统我们要什么机型
+echo "正在生成 AX1800 Pro 配置..."
+
+# 清除旧配置 (如果存在)
+rm -f .config
+touch .config
+
+# 写入目标平台：Qualcommax IPQ60xx
+echo "CONFIG_TARGET_qualcommax=y" >> .config
+echo "CONFIG_TARGET_qualcommax_ipq60xx=y" >> .config
+
+# 写入具体机型：JDCloud AX1800 Pro (re-ss-01)
+echo "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_ax1800-pro=y" >> .config
+
+# 开启必要的 WiFi 固件支持
+echo "CONFIG_PACKAGE_ath11k-firmware-ipq6018=y" >> .config
+echo "CONFIG_PACKAGE_kmod-ath11k=y" >> .config
+echo "CONFIG_PACKAGE_qca-nss-drv=y" >> .config
+echo "CONFIG_PACKAGE_qca-nss-ecm=y" >> .config
+
+# 设置固件分区大小 (防止插件装不下)
+echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1024" >> .config
+
+# --- 4. 系统微调 ---
+# 修改默认 IP
+if [ -f "package/base-files/files/bin/config_generate" ]; then
+    if [ -n "$IP_ADDRESS" ]; then
+        sed -i "s/192.168.1.1/$IP_ADDRESS/g" package/base-files/files/bin/config_generate
+    fi
+fi
+
+# 语言优化
+for e in $(ls -d package/A/luci-*/po feeds/luci/applications/luci-*/po 2>/dev/null); do
+    if [[ -d $e/zh-cn && ! -d $e/zh_Hans ]]; then
+        ln -s zh-cn $e/zh_Hans 2>/dev/null
+    fi
+done
+
+color cg "脚本执行完毕！机型已锁定为 AX1800 Pro"
