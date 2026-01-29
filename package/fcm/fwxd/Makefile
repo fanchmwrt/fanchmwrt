@@ -48,6 +48,7 @@ define Package/fwxd/install
 	$(INSTALL_BIN) ./files/uci-defaults/* $(1)/etc/uci-defaults/
 	$(INSTALL_BIN) ./files/fwx.init $(1)/etc/init.d/fwx
 	$(INSTALL_BIN) ./files/gen_class.sh $(1)/usr/bin
+	$(INSTALL_BIN) ./files/fwx_cli.sh $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/fwxd $(1)/usr/bin
 	$(INSTALL_BIN) ./files/fwx-dump.sh $(1)/usr/bin/fwx-dump
 	$(INSTALL_BIN) ./files/rule_manager.lua $(1)/usr/bin/rule_manager

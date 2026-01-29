@@ -79,21 +79,24 @@ return baseclass.extend({
 		this.renderCategoryNav(); 
 		this.renderBreadcrumb(tree);
 
+		let currentLevel = 0;
 		if (L.env.dispatchpath.length >= 3) {
 			for (var i = 0; i < 3 && node; i++) {
 				node = node.children[L.env.dispatchpath[i]];
 				url = url + (url ? '/' : '') + L.env.dispatchpath[i];
 			}
 
+			currentLevel = 1;
+
 			if (node)
-				this.renderTabMenu(node, url, 0);
+				this.renderTabMenu(node, url, currentLevel);
 		}
 
 		const isWide = this.isWideScreen();
 		if (isWide) {
-		this.renderMainMenu(node, url, 0);
+		this.renderMainMenu(node, url, currentLevel);
 		} else {
-			this.renderMobileMenu(node, url, 0);
+			this.renderMobileMenu(node, url, currentLevel);
 		}
 		
 		setTimeout(() => {
@@ -303,11 +306,7 @@ return baseclass.extend({
 		return false;
 	},
 
-	isTabMenu(child, parentTree) {
-	
-		
-		return false;
-	},
+
 
 	getMenuCategory(menuName) {
 		const basicMenus = [
@@ -404,10 +403,8 @@ return baseclass.extend({
 			return E([]);
 		}
 
+
 		children.forEach(child => {
-			if (this.isTabMenu(child, tree)) {
-				return;
-			}
 
 			const submenu = this.renderMainMenu(child, url + '/' + child.name, level + 1);
 			const subclass = (level === 0 && submenu.firstElementChild) ? 'dropdown' : '';
@@ -537,9 +534,6 @@ return baseclass.extend({
 
 		children.forEach(child => {
 
-			if (this.isTabMenu(child, tree)) {
-				return;
-			}
 
 			const submenu = this.renderMobileMenu(child, url + '/' + child.name, level + 1);
 			const subclass = (level === 0 && submenu.firstElementChild) ? 'dropdown' : '';
@@ -648,7 +642,6 @@ return baseclass.extend({
 			const menuLink = menuItem.querySelector('a.menu');
 			const menuText = menuLink.textContent.trim();
 			
-			// 检查当前路径是否匹配这个菜单
 			if (currentPath.includes(menuText.toLowerCase()) || 
 				this.isCurrentMenuActive(menuItem, currentPath)) {
 				menuItem.classList.add('open');
