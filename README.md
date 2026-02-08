@@ -1,7 +1,8 @@
 ## About
 FanchmWrt is an open-source home firewall system.  
 This project is based on OpenWrt and incorporates some firewall features.    
-It is currently under development and the first version will be released soon.   
+Several popular device firmwares have been released and are available for download at [www.fanchmwrt.com](https://www.fanchmwrt.com).   
+You can also compile firmwares for other models yourself.
 
 ## Development
 You can compile the fanchmwrt firmware yourself, Ubuntu 22 is recommended.
