@@ -160,6 +160,146 @@ char *cidr2str(int cidr) {
     return mask_str;
 }
 
+static int netmask_to_prefix(const char *mask_str)
+{
+    struct in_addr addr;
+    uint32_t mask;
+    int prefix = 0;
+    int i;
+
+    if (!mask_str || inet_aton(mask_str, &addr) == 0) {
+        return -1;
+    }
+
+    mask = ntohl(addr.s_addr);
+    for (i = 31; i >= 0; i--) {
+        if (mask & (1u << i)) {
+            prefix++;
+        } else {
+            break;
+        }
+    }
+
+    if (prefix < 0 || prefix > 32) {
+        return -1;
+    }
+
+    if (prefix < 32) {
+        uint32_t expected = (prefix == 0) ? 0u : (~0u << (32 - prefix));
+        if (mask != expected) {
+            return -1;
+        }
+    } else if (mask != 0xFFFFFFFFu) {
+        return -1;
+    }
+
+    return prefix;
+}
+
+static int parse_ipaddr_list_token(const char *token, char *ip_out, size_t ip_out_len, char *mask_out, size_t mask_out_len)
+{
+    char local[64] = {0};
+    char *slash = NULL;
+    int prefix = -1;
+    char *mask_str = NULL;
+
+    if (!token || !ip_out || !mask_out || ip_out_len == 0 || mask_out_len == 0) {
+        return -1;
+    }
+
+    snprintf(local, sizeof(local), "%s", token);
+    slash = strchr(local, '/');
+    if (!slash) {
+        return -1;
+    }
+
+    *slash = '\0';
+    slash++;
+    if (local[0] == '\0' || slash[0] == '\0') {
+        return -1;
+    }
+
+    prefix = atoi(slash);
+    if (prefix < 0 || prefix > 32) {
+        return -1;
+    }
+
+    mask_str = cidr2str(prefix);
+    if (!mask_str) {
+        return -1;
+    }
+
+    snprintf(ip_out, ip_out_len, "%s", local);
+    snprintf(mask_out, mask_out_len, "%s", mask_str);
+    return 0;
+}
+
+static const char *get_section_option_value(struct uci_section *s, const char *option_name);
+
+static int replace_first_list_item(struct uci_context *ctx, const char *uci_key, const char *first_item)
+{
+    char list_buf[256] = {0};
+    char *items[32] = {0};
+    int item_count = 0;
+    int i = 0;
+    char *saveptr = NULL;
+    char *token = NULL;
+
+    if (!ctx || !uci_key || !first_item || first_item[0] == '\0') {
+        return -1;
+    }
+
+    if (fwx_uci_get_list_value(ctx, (char *)uci_key, list_buf, sizeof(list_buf), " ") == 0 && list_buf[0] != '\0') {
+        token = strtok_r(list_buf, " ", &saveptr);
+        while (token && item_count < (int)(sizeof(items) / sizeof(items[0]))) {
+            items[item_count++] = token;
+            token = strtok_r(NULL, " ", &saveptr);
+        }
+    }
+
+    fwx_uci_delete(ctx, (char *)uci_key);
+    fwx_uci_add_list(ctx, (char *)uci_key, (char *)first_item);
+
+    for (i = 1; i < item_count; i++) {
+        if (items[i] && items[i][0] != '\0') {
+            fwx_uci_add_list(ctx, (char *)uci_key, items[i]);
+        }
+    }
+
+    return 0;
+}
+
+static void get_interface_ipaddr_and_mask(struct uci_context *ctx, struct uci_section *s, char *ip_out, size_t ip_out_len, char *mask_out, size_t mask_out_len)
+{
+    const char *ipaddr_str = NULL;
+    const char *netmask_str = NULL;
+    struct uci_option *ipaddr_opt = NULL;
+    struct uci_element *e = NULL;
+
+    if (!ctx || !s || !ip_out || !mask_out || ip_out_len == 0 || mask_out_len == 0) {
+        return;
+    }
+
+    ipaddr_str = get_section_option_value(s, "ipaddr");
+    netmask_str = get_section_option_value(s, "netmask");
+    if (ipaddr_str && ipaddr_str[0] != '\0') {
+        snprintf(ip_out, ip_out_len, "%s", ipaddr_str);
+        if (netmask_str && netmask_str[0] != '\0') {
+            snprintf(mask_out, mask_out_len, "%s", netmask_str);
+        }
+        return;
+    }
+
+    ipaddr_opt = uci_lookup_option(ctx, s, "ipaddr");
+    if (ipaddr_opt && ipaddr_opt->type == UCI_TYPE_LIST) {
+        uci_foreach_element(&ipaddr_opt->v.list, e) {
+            if (e->name && parse_ipaddr_list_token(e->name, ip_out, ip_out_len, mask_out, mask_out_len) == 0) {
+                return;
+            }
+        }
+    }
+}
+
 
 static int interface_name_matches(const char *ifname, const char *prefix) {
     if (!ifname || !prefix) return 0;
@@ -280,14 +420,15 @@ static struct json_object *get_interface_list_by_type(const char *iftype) {
         
         const char *device_str = get_section_option_value(s, "device");
         const char *proto_str = get_section_option_value(s, "proto");
-        const char *ipaddr_str = get_section_option_value(s, "ipaddr");
-        const char *netmask_str = get_section_option_value(s, "netmask");
+        char ipaddr_buf[32] = {0};
+        char netmask_buf[32] = {0};
         const char *gateway_str = get_section_option_value(s, "gateway");
+        get_interface_ipaddr_and_mask(ctx, s, ipaddr_buf, sizeof(ipaddr_buf), netmask_buf, sizeof(netmask_buf));
         
         LOG_DEBUG("get_interface_list_by_type: device=%s, proto=%s, ipaddr=%s\n", 
                  device_str ? device_str : "NULL",
                  proto_str ? proto_str : "NULL",
-                 ipaddr_str ? ipaddr_str : "NULL");
+                 ipaddr_buf[0] ? ipaddr_buf : "NULL");
         
 
         struct json_object *dns_array = json_object_new_array();
@@ -308,8 +449,8 @@ static struct json_object *get_interface_list_by_type(const char *iftype) {
         json_object_object_add(iface_obj, "name", json_object_new_string(name_str));
         json_object_object_add(iface_obj, "device", json_object_new_string(device_str ? device_str : ""));
         json_object_object_add(iface_obj, "proto", json_object_new_string(proto_str ? proto_str : ""));
-        json_object_object_add(iface_obj, "ipaddr", json_object_new_string(ipaddr_str ? ipaddr_str : ""));
-        json_object_object_add(iface_obj, "netmask", json_object_new_string(netmask_str ? netmask_str : ""));
+        json_object_object_add(iface_obj, "ipaddr", json_object_new_string(ipaddr_buf));
+        json_object_object_add(iface_obj, "netmask", json_object_new_string(netmask_buf));
         json_object_object_add(iface_obj, "gateway", json_object_new_string(gateway_str ? gateway_str : ""));
         json_object_object_add(iface_obj, "dns", dns_array);
         
@@ -462,11 +603,30 @@ static struct json_object *add_or_mod_interface(struct json_object *req_obj, con
         struct json_object *gateway_obj = json_object_object_get(req_obj, "gateway");
         
         if (ipaddr_obj) {
-            snprintf(uci_path, sizeof(uci_path), "network.%s.ipaddr", name);
-            fwx_uci_set_value(ctx, uci_path, (char *)json_object_get_string(ipaddr_obj));
+            if (strcmp(iftype, "lan") == 0) {
+                const char *ipaddr = json_object_get_string(ipaddr_obj);
+                const char *netmask = netmask_obj ? json_object_get_string(netmask_obj) : NULL;
+                int prefix = netmask_to_prefix(netmask ? netmask : "");
+                char ipaddr_with_prefix[64] = {0};
+
+                if (prefix < 0) {
+                    prefix = 24;
+                }
+                snprintf(uci_path, sizeof(uci_path), "network.%s.ipaddr", name);
+                if (ipaddr && ipaddr[0] != '\0') {
+                    snprintf(ipaddr_with_prefix, sizeof(ipaddr_with_prefix), "%s/%d", ipaddr, prefix);
+                    replace_first_list_item(ctx, uci_path, ipaddr_with_prefix);
+                }
+            } else {
+                snprintf(uci_path, sizeof(uci_path), "network.%s.ipaddr", name);
+                fwx_uci_set_value(ctx, uci_path, (char *)json_object_get_string(ipaddr_obj));
+            }
         }
         
-        if (netmask_obj) {
+        if (strcmp(iftype, "lan") == 0) {
+            snprintf(uci_path, sizeof(uci_path), "network.%s.netmask", name);
+            fwx_uci_delete(ctx, uci_path);
+        } else if (netmask_obj) {
             snprintf(uci_path, sizeof(uci_path), "network.%s.netmask", name);
             fwx_uci_set_value(ctx, uci_path, (char *)json_object_get_string(netmask_obj));
         }
@@ -632,8 +792,24 @@ struct json_object *fwx_api_get_lan_info(struct json_object *req_obj) {
     char dns1_str[32] = {0};
     char dns2_str[32] = {0};
     
-    fwx_uci_get_value(ctx, "network.lan.ipaddr", ipaddr_str, sizeof(ipaddr_str));
-    fwx_uci_get_value(ctx, "network.lan.netmask", netmask_str, sizeof(netmask_str));
+    {
+        char ipaddr_list_buf[128] = {0};
+        int list_ok = 0;
+
+        if (fwx_uci_get_list_value(ctx, "network.lan.ipaddr", ipaddr_list_buf, sizeof(ipaddr_list_buf), " ") == 0 &&
+            ipaddr_list_buf[0] != '\0') {
+            char *saveptr = NULL;
+            char *token = strtok_r(ipaddr_list_buf, " ", &saveptr);
+            if (token && parse_ipaddr_list_token(token, ipaddr_str, sizeof(ipaddr_str), netmask_str, sizeof(netmask_str)) == 0) {
+                list_ok = 1;
+            }
+        }
+
+        if (!list_ok) {
+            fwx_uci_get_value(ctx, "network.lan.ipaddr", ipaddr_str, sizeof(ipaddr_str));
+            fwx_uci_get_value(ctx, "network.lan.netmask", netmask_str, sizeof(netmask_str));
+        }
+    }
     fwx_uci_get_value(ctx, "network.lan.proto", proto_str, sizeof(proto_str));
     fwx_uci_get_value(ctx, "network.lan.gateway", gateway_str, sizeof(gateway_str));
     
@@ -711,12 +887,22 @@ struct json_object *fwx_api_set_lan_info(struct json_object *req_obj) {
     
     
     if (ipaddr_obj) {
-        fwx_uci_set_value(ctx, "network.lan.ipaddr", (char *)json_object_get_string(ipaddr_obj));
+        const char *ipaddr = json_object_get_string(ipaddr_obj);
+        const char *netmask = netmask_obj ? json_object_get_string(netmask_obj) : NULL;
+        int prefix = netmask_to_prefix(netmask ? netmask : "");
+
+        if (ipaddr && ipaddr[0] != '\0') {
+            char ipaddr_with_prefix[64] = {0};
+            if (prefix < 0) {
+                prefix = 24;
+            }
+            snprintf(ipaddr_with_prefix, sizeof(ipaddr_with_prefix), "%s/%d", ipaddr, prefix);
+            /* 统一使用 list ipaddr（x.x.x.x/nn）格式，只替换第一项并保留其余项 */
+            replace_first_list_item(ctx, "network.lan.ipaddr", ipaddr_with_prefix);
+        }
     }
     
-    if (netmask_obj) {
-        fwx_uci_set_value(ctx, "network.lan.netmask", (char *)json_object_get_string(netmask_obj));
-    }
+    fwx_uci_delete(ctx, "network.lan.netmask");
     
     if (gateway_obj) {
         fwx_uci_set_value(ctx, "network.lan.gateway", (char *)json_object_get_string(gateway_obj));

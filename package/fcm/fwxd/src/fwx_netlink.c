@@ -183,6 +183,7 @@ void fwx_netlink_handler(struct uloop_fd *u, unsigned int ev)
                          hour, mac, REPORT_INTERVAL_SECS);
             }
         }
+        update_online_session_activity(node, REPORT_INTERVAL_SECS, node->active == 1 ? REPORT_INTERVAL_SECS : 0);
     }
     
     
@@ -204,6 +205,7 @@ void fwx_netlink_handler(struct uloop_fd *u, unsigned int ev)
         g_global_hourly_traffic[hour].up_bytes += total_up_bytes;
         g_global_hourly_traffic[hour].down_bytes += total_down_bytes;
     }
+    update_online_session_flow(node, total_up_bytes, total_down_bytes);
     
     struct json_object *visit_array = json_object_object_get(root, "visit_info");
     if (!visit_array)
@@ -226,6 +228,7 @@ void fwx_netlink_handler(struct uloop_fd *u, unsigned int ev)
         id = appid % 1000;
         if (id <= 0 || type <= 0)
             continue;
+        update_online_session_recent_app(node, appid);
         
         
         visit_stat_t *stat_node = NULL;

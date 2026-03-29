@@ -13,7 +13,7 @@ stop_service(){
 }
 
 start_service(){
-	lsmod |grep fwx >/dev/null
+	lsmod |grep "fwx " >/dev/null
 	if [ $? -ne 0 ];then
 		modprobe fwx
 	fi

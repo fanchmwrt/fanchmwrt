@@ -72,6 +72,26 @@ static const char *get_option_value(struct uci_section *s, const char *option_na
     return o->v.string;
 }
 
+static int normalize_app_id_token(const char *raw, char *out, int out_len) {
+    int start = 0, end = 0, val = 0;
+    char extra = '\0';
+    if (!raw || !out || out_len <= 0) return 0;
+
+    if (sscanf(raw, "%d-%d%c", &start, &end, &extra) == 2) {
+        if (start > 0 && end > 0 && start <= end) {
+            snprintf(out, out_len, "%d-%d", start, end);
+            return 1;
+        }
+        return 0;
+    }
+
+    if (sscanf(raw, "%d%c", &val, &extra) == 1 && val > 0) {
+        snprintf(out, out_len, "%d", val);
+        return 1;
+    }
+    return 0;
+}
+
 struct json_object *fwx_api_get_filter_rules(struct json_object *req_obj) {
     struct json_object *data_obj = json_object_new_object();
     struct json_object *rules_array = json_object_new_array();
@@ -115,6 +135,7 @@ struct json_object *fwx_api_get_filter_rules(struct json_object *req_obj) {
         const char *user_mac_str = get_option_value(s, "user_mac");
         const char *user_name_str = get_option_value(s, "user_name");
         const char *enabled_str = get_option_value(s, "enabled");
+        const char *filter_quic_str = get_option_value(s, "filter_quic");
 
         struct json_object *rule_obj = json_object_new_object();
         if (!rule_obj) {
@@ -128,6 +149,7 @@ struct json_object *fwx_api_get_filter_rules(struct json_object *req_obj) {
         json_object_object_add(rule_obj, "user_mac", json_object_new_string(user_mac_str ? user_mac_str : ""));
         json_object_object_add(rule_obj, "user_name", json_object_new_string(user_name_str ? user_name_str : ""));
         json_object_object_add(rule_obj, "enabled", json_object_new_int(enabled_str ? atoi(enabled_str) : 1));
+        json_object_object_add(rule_obj, "filter_quic", json_object_new_int(filter_quic_str ? atoi(filter_quic_str) : 0));
 
         // Process time_rule list
         struct json_object *time_rules_array = json_object_new_array();
@@ -184,7 +206,7 @@ struct json_object *fwx_api_get_filter_rules(struct json_object *req_obj) {
         }
         json_object_object_add(rule_obj, "time_rules", time_rules_array);
 
-        // Process app_id list
+        // Process app_id list（支持字符串段格式：1001-1005）
         struct json_object *app_ids_array = json_object_new_array();
         struct uci_option *app_id_opt = uci_lookup_option(uci_ctx, s, "app_id");
         if (app_id_opt && app_id_opt->type == UCI_TYPE_LIST) {
@@ -192,10 +214,7 @@ struct json_object *fwx_api_get_filter_rules(struct json_object *req_obj) {
             uci_foreach_element(&app_id_opt->v.list, app_elem) {
                 const char *app_id_str = app_elem->name;
                 if (!app_id_str) continue;
-                int app_id = atoi(app_id_str);
-                if (app_id > 0) {
-                    json_object_array_add(app_ids_array, json_object_new_int(app_id));
-                }
+                json_object_array_add(app_ids_array, json_object_new_string(app_id_str));
             }
         }
         json_object_object_add(rule_obj, "app_ids", app_ids_array);
@@ -222,6 +241,7 @@ struct json_object *fwx_api_add_filter_rule(struct json_object *req_obj) {
     struct json_object *user_mac_obj = json_object_object_get(req_obj, "user_mac");
     struct json_object *user_name_obj = json_object_object_get(req_obj, "user_name");
     struct json_object *enabled_obj = json_object_object_get(req_obj, "enabled");
+    struct json_object *filter_quic_obj = json_object_object_get(req_obj, "filter_quic");
     struct json_object *time_rules_obj = json_object_object_get(req_obj, "time_rules");
     struct json_object *app_ids_obj = json_object_object_get(req_obj, "app_ids");
     int i, j;
@@ -271,6 +291,14 @@ struct json_object *fwx_api_add_filter_rule(struct json_object *req_obj) {
     int enabled = enabled_obj ? json_object_get_int(enabled_obj) : 1;
     snprintf(enabled_str, sizeof(enabled_str), "%d", enabled);
     fwx_uci_set_value(uci_ctx, buf, enabled_str);
+
+    snprintf(buf, sizeof(buf), "appfilter.@rule[-1].filter_quic");
+    {
+        char filter_quic_str[16];
+        int filter_quic = filter_quic_obj ? json_object_get_int(filter_quic_obj) : 0;
+        snprintf(filter_quic_str, sizeof(filter_quic_str), "%d", filter_quic ? 1 : 0);
+        fwx_uci_set_value(uci_ctx, buf, filter_quic_str);
+    }
     
 
     int time_rules_len = json_object_array_length(time_rules_obj);
@@ -307,10 +335,9 @@ struct json_object *fwx_api_add_filter_rule(struct json_object *req_obj) {
     int app_ids_len = json_object_array_length(app_ids_obj);
     for (i = 0; i < app_ids_len; i++) {
         struct json_object *app_id_obj = json_object_array_get_idx(app_ids_obj, i);
-        int app_id = json_object_get_int(app_id_obj);
-        if (app_id > 0) {
-            char app_id_str[32];
-            snprintf(app_id_str, sizeof(app_id_str), "%d", app_id);
+        const char *raw = json_object_get_string(app_id_obj);
+        char app_id_str[64] = {0};
+        if (normalize_app_id_token(raw, app_id_str, sizeof(app_id_str))) {
             snprintf(buf, sizeof(buf), "appfilter.@rule[-1].app_id");
             fwx_uci_add_list(uci_ctx, buf, app_id_str);
         }
@@ -386,6 +413,14 @@ struct json_object *fwx_api_update_filter_rule(struct json_object *req_obj) {
         snprintf(enabled_str, sizeof(enabled_str), "%d", json_object_get_int(enabled_obj));
         fwx_uci_set_value(uci_ctx, buf, enabled_str);
     }
+
+    struct json_object *filter_quic_obj = json_object_object_get(req_obj, "filter_quic");
+    if (filter_quic_obj) {
+        snprintf(buf, sizeof(buf), "appfilter.@rule[%d].filter_quic", index);
+        char filter_quic_str[16];
+        snprintf(filter_quic_str, sizeof(filter_quic_str), "%d", json_object_get_int(filter_quic_obj) ? 1 : 0);
+        fwx_uci_set_value(uci_ctx, buf, filter_quic_str);
+    }
     
 
     snprintf(buf, sizeof(buf), "appfilter.@rule[%d].time_rule", index);
@@ -433,10 +468,9 @@ struct json_object *fwx_api_update_filter_rule(struct json_object *req_obj) {
         int app_ids_len = json_object_array_length(app_ids_obj);
         for (i = 0; i < app_ids_len; i++) {
             struct json_object *app_id_obj = json_object_array_get_idx(app_ids_obj, i);
-            int app_id = json_object_get_int(app_id_obj);
-            if (app_id > 0) {
-                char app_id_str[32];
-                snprintf(app_id_str, sizeof(app_id_str), "%d", app_id);
+            const char *raw = json_object_get_string(app_id_obj);
+            char app_id_str[64] = {0};
+            if (normalize_app_id_token(raw, app_id_str, sizeof(app_id_str))) {
                 snprintf(buf, sizeof(buf), "appfilter.@rule[%d].app_id", index);
                 fwx_uci_add_list(uci_ctx, buf, app_id_str);
             }

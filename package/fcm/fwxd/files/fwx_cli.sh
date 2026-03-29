@@ -230,6 +230,7 @@ check_and_init_network() {
         uci set fwx.network.work_mode=1
         uci commit fwx
         /etc/init.d/network reload
+		/etc/init.d/fwx restart >/dev/null 2>&1
     else
         uci set fwx.global.cli_init=1
         uci commit fwx

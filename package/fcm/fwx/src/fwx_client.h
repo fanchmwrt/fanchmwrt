@@ -19,7 +19,7 @@ extern int g_min_http_match_count;
 
 #define MAX_AF_CLIENT_HASH_SIZE 64
 #define NF_CLIENT_TIMER_EXPIRE 1
-#define MAX_CLIENT_ACTIVE_TIME 90
+#define MAX_CLIENT_ACTIVE_TIME 180
 
 #define AF_CLIENT_LOCK_R() read_lock_bh(&af_client_lock);
 #define AF_CLIENT_UNLOCK_R() read_unlock_bh(&af_client_lock);

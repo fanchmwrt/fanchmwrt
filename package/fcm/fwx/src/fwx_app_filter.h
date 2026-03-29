@@ -12,6 +12,7 @@
 
 #define MAX_APP_FILTER_RULE_NUM 64
 #define MAX_APP_ID_PER_RULE 1024
+#define APPID_HASH_SIZE 256
 
 extern u_int32_t g_appfilter_update_jiffies;
 
@@ -22,7 +23,7 @@ typedef struct app_id_node {
 
 
 typedef struct app_id_config {
-    struct hlist_head hash_table[256];  // 使用app_id作为hash key
+    struct hlist_head hash_table[APPID_HASH_SIZE]; 
     int count;
 } app_id_config_t;
 
@@ -30,6 +31,7 @@ typedef struct app_id_config {
 typedef struct app_filter_rule {
     int rule_id;                
     int enable;                 
+    int filter_quic;
     mac_config_t mac_list;      
     app_id_config_t app_id_list; 
     struct list_head list;  

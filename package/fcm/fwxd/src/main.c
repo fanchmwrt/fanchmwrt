@@ -11,6 +11,7 @@
 #include "fwx_user.h"
 #include "fwx_netlink.h"
 #include "fwx_ubus.h"
+#include "fwx_stat.h"
 #include "fwx_config.h"
 #include <time.h>
 #include <signal.h>
@@ -73,6 +74,16 @@ int fwx_nl_add_feature(char *feature){
     return 0;
 }
 
+int fwx_nl_feature_load_done(void){
+    fwx_nl_msg_t msg;
+    if (fwx_nl_fd.fd < 0){
+        return -1;
+    }
+    msg.action = FWX_NL_MSG_FEATURE_LOAD_DONE;
+    fwx_nl_send_msg_to_kernel(fwx_nl_fd.fd, (void *)&msg, sizeof(msg));
+    return 0;
+}
+
 
 
 int fwx_load_feature_to_kernel(void){
@@ -104,6 +115,10 @@ int fwx_load_feature_to_kernel(void){
         feature_count++;
 	}
 	fclose(fp);
+    if (fwx_nl_feature_load_done() < 0){
+        LOG_ERROR("Failed to notify feature load done\n");
+        return -1;
+    }
     LOG_INFO("load %d features to kernel\n", feature_count);
     return 0;
 }
@@ -230,6 +245,9 @@ void fwx_timeout_handler(struct uloop_timeout *t)
             g_feature_update = 0;
         }
     }
+	if (count % 5 == 0){
+		fwx_session_stat_tick();
+	}
 
     uloop_timeout_set(t, 1000);
 }

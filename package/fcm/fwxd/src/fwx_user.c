@@ -27,6 +27,7 @@
 
 
 LIST_HEAD(client_list);
+LIST_HEAD(user_record_list);
 int g_cur_user_num = 0;
 
 
@@ -55,6 +56,117 @@ static void format_time_string(u_int32_t timestamp, char *time_str, size_t len);
 static void cleanup_old_record_files(void);
 static u_int32_t parse_date_string(const char *date_str);
 static int extract_date_from_filename(const char *filename, char *date_str, size_t len);
+
+static void session_push_recent_app(online_session_stat_t *session, int appid) {
+    int i;
+    if (!session || appid <= 0)
+        return;
+
+    for (i = 0; i < session->recent_app_count; i++) {
+        if (session->recent_apps[i] == appid) {
+            int j;
+            for (j = i; j > 0; j--) {
+                session->recent_apps[j] = session->recent_apps[j - 1];
+            }
+            session->recent_apps[0] = appid;
+            return;
+        }
+    }
+
+    if (session->recent_app_count < MAX_RECENT_APPS) {
+        for (i = session->recent_app_count; i > 0; i--) {
+            session->recent_apps[i] = session->recent_apps[i - 1];
+        }
+        session->recent_apps[0] = appid;
+        session->recent_app_count++;
+    } else {
+        for (i = MAX_RECENT_APPS - 1; i > 0; i--) {
+            session->recent_apps[i] = session->recent_apps[i - 1];
+        }
+        session->recent_apps[0] = appid;
+    }
+}
+
+void reset_online_session_stat(client_node_t *client, u_int32_t start_time) {
+    if (!client)
+        return;
+    memset(&client->online_session, 0, sizeof(client->online_session));
+    client->online_session.start_time = start_time;
+}
+
+void update_online_session_flow(client_node_t *client, unsigned long long up_bytes, unsigned long long down_bytes) {
+    if (!client || !client->online)
+        return;
+    client->online_session.up_bytes += up_bytes;
+    client->online_session.down_bytes += down_bytes;
+}
+
+void update_online_session_activity(client_node_t *client, int online_seconds, int active_seconds) {
+    if (!client || !client->online)
+        return;
+    if (online_seconds > 0)
+        client->online_session.online_duration += (unsigned long long)online_seconds;
+    if (active_seconds > 0)
+        client->online_session.active_duration += (unsigned long long)active_seconds;
+}
+
+void update_online_session_recent_app(client_node_t *client, int appid) {
+    if (!client || !client->online)
+        return;
+    session_push_recent_app(&client->online_session, appid);
+}
+
+void add_user_record(client_node_t *client, int action, u_int32_t timestamp) {
+    user_record_t *record = NULL;
+    int total = 0;
+    struct list_head *pos, *n;
+    if (!client)
+        return;
+
+    record = (user_record_t *)calloc(1, sizeof(user_record_t));
+    if (!record)
+        return;
+
+    record->action = action;
+    record->timestamp = timestamp;
+    strncpy(record->mac, client->mac, sizeof(record->mac) - 1);
+    strncpy(record->nickname, client->nickname, sizeof(record->nickname) - 1);
+    strncpy(record->hostname, client->hostname, sizeof(record->hostname) - 1);
+
+    if (action == 1) {
+        record->up_bytes = client->online_session.up_bytes;
+        record->down_bytes = client->online_session.down_bytes;
+        record->online_duration = client->online_session.online_duration;
+        record->active_duration = client->online_session.active_duration;
+        record->recent_app_count = client->online_session.recent_app_count;
+        if (record->recent_app_count > MAX_RECENT_APPS) {
+            record->recent_app_count = MAX_RECENT_APPS;
+        }
+        if (record->recent_app_count > 0) {
+            memcpy(record->recent_apps, client->online_session.recent_apps,
+                   sizeof(int) * record->recent_app_count);
+        }
+    }
+
+    INIT_LIST_HEAD(&record->list);
+    list_add(&record->list, &user_record_list);
+
+    list_for_each(pos, &user_record_list) {
+        total++;
+    }
+    while (total > MAX_USER_RECORDS) {
+        user_record_t *last = NULL;
+        list_for_each_safe(pos, n, &user_record_list) {
+            last = list_entry(pos, user_record_t, list);
+        }
+        if (!last) {
+            break;
+        }
+        list_del(&last->list);
+        free(last);
+        total--;
+    }
+}
 
 const char *get_client_data_base_dir(void) {
     if (!g_client_data_base_dir_initialized) {
@@ -482,17 +594,22 @@ void init_client_list(void)
 client_node_t *add_client_node(char *mac)
 {
 	int j;
+    u_int32_t now = get_timestamp();
     client_node_t *node = (client_node_t *)calloc(1, sizeof(client_node_t));
     if (!node)
         return NULL;
     strncpy(node->mac, mac, sizeof(node->mac));
-    node->online = 1;
-    node->online_time = get_timestamp();
+    node->online = 0;
+    node->online_time = now;
+    node->offline_time = now;
 
     node->ipv6[0] = '\0';
     node->up_rate = 0;
     node->down_rate = 0;
     node->active = 0;  
+    node->last_online_state = 0;
+    node->session_online_recorded = 0;
+    reset_online_session_stat(node, now);
 
     INIT_LIST_HEAD(&node->online_visit);
     INIT_LIST_HEAD(&node->visit);
@@ -637,6 +754,7 @@ void clean_client_online_status(void)
     client_node_t *node = NULL;
 
     list_for_each_entry(node, &client_list, client) {
+        node->last_online_state = node->online;
         if (node->online)
         {
             node->offline_time = get_timestamp();
@@ -724,7 +842,29 @@ void update_client_from_kernel(void)
 
 void update_client_online_status(void)
 {
+    int now = get_timestamp();
+    client_node_t *node = NULL;
     update_client_from_kernel();
+    list_for_each_entry(node, &client_list, client) {
+        int was_online = node->last_online_state;
+        int is_online = node->online;
+        if (!was_online && is_online) {
+            node->online_time = now;
+            reset_online_session_stat(node, now);
+            node->session_online_recorded = 0;
+        } else if (was_online && !is_online) {
+            node->offline_time = now;
+            if (node->session_online_recorded) {
+                add_user_record(node, 1, now);
+            }
+            node->session_online_recorded = 0;
+            reset_online_session_stat(node, now);
+        } else if (is_online && node->active && !node->session_online_recorded) {
+            add_user_record(node, 0, now);
+            node->session_online_recorded = 1;
+        }
+        node->last_online_state = is_online;
+    }
 }
 
 #define CLIENT_OFFLINE_TIME (SECONDS_PER_DAY * 3)
@@ -925,6 +1065,7 @@ void dump_client_list(void)
 EXIT:
     fclose(fp);
 }
+
 
 #define MAX_RECORD_TIME (3 * 24 * 60 * 60) // 7day
 

@@ -1,0 +1,176 @@
+diff -urN a/include/net/netfilter/nf_conntrack.h b/include/net/netfilter/nf_conntrack.h
+--- a/include/net/netfilter/nf_conntrack.h	2026-03-26 14:27:09.948270437 +0800
++++ b/include/net/netfilter/nf_conntrack.h	2026-03-28 18:12:16.342320757 +0800
+@@ -78,6 +78,8 @@
+ 	u32 match_status;
+ 	u8 action;
+ 	u8 *host;
++	void *user_ptr;
++	struct list_head session_node;
+ };
+ struct nf_conn {
+ 	/* Usage count in here is 1 for hash table, 1 per skb,
+diff -urN a/include/net/netfilter/nf_fwx_user.h b/include/net/netfilter/nf_fwx_user.h
+--- a/include/net/netfilter/nf_fwx_user.h	1970-01-01 08:00:00.000000000 +0800
++++ b/include/net/netfilter/nf_fwx_user.h	2026-03-28 18:12:16.338320779 +0800
+@@ -0,0 +1,19 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef _NF_FWX_USER_H
++#define _NF_FWX_USER_H
++
++struct sk_buff;
++struct nf_conn;
++
++struct nf_fwx_user_ops {
++	void (*conn_add)(struct nf_conn *ct);
++	void (*conn_del)(struct nf_conn *ct);
++};
++
++int nf_fwx_user_register_ops(const struct nf_fwx_user_ops *ops);
++void nf_fwx_user_unregister_ops(const struct nf_fwx_user_ops *ops);
++
++void nf_fwx_user_conn_add(struct nf_conn *ct);
++void nf_fwx_user_conn_del(struct nf_conn *ct);
++
++#endif
+diff -urN a/net/netfilter/nf_conntrack_core.c b/net/netfilter/nf_conntrack_core.c
+--- a/net/netfilter/nf_conntrack_core.c	2026-03-26 14:27:09.948270437 +0800
++++ b/net/netfilter/nf_conntrack_core.c	2026-03-28 18:15:13.141321503 +0800
+@@ -47,6 +47,7 @@
+ #include <net/netfilter/nf_conntrack_timeout.h>
+ #include <net/netfilter/nf_conntrack_labels.h>
+ #include <net/netfilter/nf_conntrack_synproxy.h>
++#include <net/netfilter/nf_fwx_user.h>
+ #include <net/netfilter/nf_nat.h>
+ #include <net/netfilter/nf_nat_helper.h>
+ #include <net/netns/hash.h>
+@@ -100,6 +101,58 @@
+ #define MAX_CHAINLEN	(80u - MIN_CHAINLEN)
+ 
+ static struct conntrack_gc_work conntrack_gc_work;
++static DEFINE_MUTEX(nf_fwx_user_ops_lock);
++static const struct nf_fwx_user_ops __rcu *g_nf_fwx_user_ops = NULL;
++
++int nf_fwx_user_register_ops(const struct nf_fwx_user_ops *ops)
++{
++	if (!ops)
++		return -EINVAL;
++	printk("nf_fwx_user_register_ops: ops=%p\n", ops);
++	mutex_lock(&nf_fwx_user_ops_lock);
++	if (rcu_access_pointer(g_nf_fwx_user_ops)) {
++		mutex_unlock(&nf_fwx_user_ops_lock);
++		return -EBUSY;
++	}
++	rcu_assign_pointer(g_nf_fwx_user_ops, ops);
++	mutex_unlock(&nf_fwx_user_ops_lock);
++
++	return 0;
++}
++EXPORT_SYMBOL(nf_fwx_user_register_ops);
++
++void nf_fwx_user_unregister_ops(const struct nf_fwx_user_ops *ops)
++{
++	mutex_lock(&nf_fwx_user_ops_lock);
++	if (rcu_access_pointer(g_nf_fwx_user_ops) == ops)
++		RCU_INIT_POINTER(g_nf_fwx_user_ops, NULL);
++	mutex_unlock(&nf_fwx_user_ops_lock);
++	synchronize_rcu();
++}
++EXPORT_SYMBOL(nf_fwx_user_unregister_ops);
++
++void nf_fwx_user_conn_add(struct nf_conn *ct)
++{
++	const struct nf_fwx_user_ops *ops;
++
++	rcu_read_lock();
++	ops = rcu_dereference(g_nf_fwx_user_ops);
++	if (ops && ops->conn_add){
++		ops->conn_add(ct);
++	}
++	rcu_read_unlock();
++}
++
++void nf_fwx_user_conn_del(struct nf_conn *ct)
++{
++	const struct nf_fwx_user_ops *ops;
++
++	rcu_read_lock();
++	ops = rcu_dereference(g_nf_fwx_user_ops);
++	if (ops && ops->conn_del)
++		ops->conn_del(ct);
++	rcu_read_unlock();
++}
+ 
+ void nf_conntrack_lock(spinlock_t *lock) __acquires(lock)
+ {
+@@ -1661,10 +1714,12 @@
+ 	ct->fwx_data.match_status = 0;
+ 	ct->fwx_data.action = 0;
+ 	ct->fwx_data.host = NULL;
++
+ 	WRITE_ONCE(ct->timeout, 0);
+ 	write_pnet(&ct->ct_net, net);
+ 	memset_after(ct, 0, __nfct_init_offset);
+-
++	ct->fwx_data.user_ptr = NULL;
++	INIT_LIST_HEAD(&ct->fwx_data.session_node);
+ 	nf_ct_zone_add(ct, zone);
+ 
+ 	/* Because we use RCU lookups, we set ct_general.use to zero before
+@@ -1707,6 +1762,7 @@
+ 		rcu_read_unlock();
+ 	}
+ 
++	nf_fwx_user_conn_del(ct);
+ 	kfree(ct->ext);
+ 	kmem_cache_free(nf_conntrack_cachep, ct);
+ 	cnet = nf_ct_pernet(net);
+diff -urN a/net/netfilter/nf_conntrack_standalone.c b/net/netfilter/nf_conntrack_standalone.c
+--- a/net/netfilter/nf_conntrack_standalone.c	2026-03-26 14:27:09.948270437 +0800
++++ b/net/netfilter/nf_conntrack_standalone.c	2026-03-28 18:12:16.374320576 +0800
+@@ -10,6 +10,7 @@
+ #include <linux/netdevice.h>
+ #include <linux/security.h>
+ #include <linux/inet.h>
++#include <linux/if_ether.h>
+ #include <net/net_namespace.h>
+ #ifdef CONFIG_SYSCTL
+ #include <linux/sysctl.h>
+@@ -25,6 +26,12 @@
+ #include <net/netfilter/nf_conntrack_timestamp.h>
+ #include <linux/rculist_nulls.h>
+ 
++struct fwx_user_node_view {
++	struct hlist_node mac_hnode;
++	rwlock_t lock;
++	u8 mac[ETH_ALEN];
++};
++
+ static bool enable_hooks __read_mostly;
+ MODULE_PARM_DESC(enable_hooks, "Always enable conntrack hooks");
+ module_param(enable_hooks, bool, 0000);
+@@ -332,6 +339,13 @@
+ 
+ 	print_tuple(s, &ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple,
+ 		    l4proto);
++	{
++		struct fwx_user_node_view *user;
++
++		user = (struct fwx_user_node_view *)ct->fwx_data.user_ptr;
++		if (user)
++			seq_printf(s, "user_mac=%pM ", user->mac);
++	}
+ 
+ 	ct_show_zone(s, ct, NF_CT_ZONE_DIR_ORIG);
+ 
+@@ -362,6 +376,10 @@
+ #if defined(CONFIG_NF_CONNTRACK_MARK)
+ 	seq_printf(s, "mark=%u ", READ_ONCE(ct->mark));
+ #endif
++	seq_printf(s, "appid=%u action=%u match_status=%u ",
++		   READ_ONCE(ct->fwx_data.app_id),
++		   READ_ONCE(ct->fwx_data.action),
++		   READ_ONCE(ct->fwx_data.match_status));
+ 
+ 	ct_show_secctx(s, ct);
+ 	ct_show_zone(s, ct, NF_CT_DEFAULT_ZONE_DIR);

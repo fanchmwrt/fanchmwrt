@@ -25,6 +25,8 @@
 #define MAX_DAILY_STAT_DAYS 30  
 #define MAX_TOP_APPS_PER_DAY 10  
 #define MAX_RECORD_DAY 30  
+#define MAX_RECENT_APPS 5
+#define MAX_USER_RECORDS 4096
 
 
 typedef struct visit_info
@@ -46,6 +48,33 @@ typedef struct online_offline_record
     unsigned long long duration;  
     struct list_head record; 
 } online_offline_record_t;
+
+typedef struct online_session_stat
+{
+    unsigned long long up_bytes;
+    unsigned long long down_bytes;
+    unsigned long long online_duration;
+    unsigned long long active_duration;
+    int recent_apps[MAX_RECENT_APPS];
+    int recent_app_count;
+    u_int32_t start_time;
+} online_session_stat_t;
+
+typedef struct user_record
+{
+    int action;  
+    u_int32_t timestamp;
+    char mac[MAX_MAC_LEN];
+    char nickname[MAX_NICKNAME_SIZE];
+    char hostname[MAX_HOSTNAME_SIZE];
+    unsigned long long up_bytes;
+    unsigned long long down_bytes;
+    unsigned long long online_duration;
+    unsigned long long active_duration;
+    int recent_apps[MAX_RECENT_APPS];
+    int recent_app_count;
+    struct list_head list;
+} user_record_t;
 
 
 typedef struct visit_stat
@@ -120,6 +149,9 @@ typedef struct client_node
     char visiting_url[MAX_REPORT_URL_LEN];
     int visiting_app;
     int active;  
+    int last_online_state;
+    int session_online_recorded;
+    online_session_stat_t online_session;
     
     daily_hourly_stat_t daily_stats; 
     
@@ -143,6 +175,7 @@ struct app_visit_stat_info
 typedef void (*iter_func)(void *arg, client_node_t *client);
 
 extern struct list_head client_list; 
+extern struct list_head user_record_list;
 
 int get_timestamp(void);
 client_node_t *add_client_node(char *mac);
@@ -189,5 +222,10 @@ struct json_object *fwx_api_get_global_app_type_stats(struct json_object *req_ob
 void save_global_traffic_stats_to_file(u_int32_t date);
 void get_global_traffic_stats(traffic_stat_t *traffic_array);
 struct json_object *fwx_api_get_global_traffic_stats(struct json_object *req_obj);
+void reset_online_session_stat(client_node_t *client, u_int32_t start_time);
+void update_online_session_flow(client_node_t *client, unsigned long long up_bytes, unsigned long long down_bytes);
+void update_online_session_activity(client_node_t *client, int online_seconds, int active_seconds);
+void update_online_session_recent_app(client_node_t *client, int appid);
+void add_user_record(client_node_t *client, int action, u_int32_t timestamp);
 
 #endif

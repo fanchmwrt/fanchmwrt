@@ -573,13 +573,6 @@ static unsigned char *read_skb(struct sk_buff *skb, unsigned int from, unsigned 
 	struct skb_seq_state state;
 	unsigned char *msg_buf = NULL;
 	unsigned int consumed = 0;
-#if 0
-	if (from <= 0 || from > 1500)
-		return NULL;
-
-	if (len <= 0 || from+len > 1500)
-		return NULL;
-#endif
 
 	msg_buf = kmalloc(len, GFP_KERNEL);
 	if (!msg_buf)
@@ -1021,7 +1014,45 @@ int af_match_one(flow_info_t *flow, af_feature_node_t *node)
 	return ret;
 }
 
-int match_feature(flow_info_t *flow)
+
+int is_quic_flow(flow_info_t *flow)
+{
+	unsigned char *data;
+	unsigned char first_byte;
+	unsigned int version;
+	
+	if (flow->l4_protocol != IPPROTO_UDP) {
+		return AF_FALSE;
+	}
+	
+	if (!flow->l4_data || flow->l4_len < 8) {
+		return AF_FALSE;
+	}
+	
+	data = flow->l4_data;
+	first_byte = data[0];
+	
+	if (first_byte & 0x80) {
+		if (flow->l4_len >= 5) {
+			version = (data[1] << 24) | (data[2] << 16) | (data[3] << 8) | data[4];
+
+			if (version == 0x00000001 ||
+				version == 0x00000000 ||  
+				version == 0x6b3343cf || 
+				(version >= 0xff000000 && version <= 0xffffffff)) { 
+				AF_LMT_DEBUG("match quic, version = %x\n", version);
+				return AF_TRUE;
+			}
+		}
+		if (flow->dport == 443) {
+			return AF_TRUE;
+		}
+		return AF_FALSE;
+	}
+	return AF_FALSE;
+}
+
+int fwx_match_feature(flow_info_t *flow)
 {
 	af_feature_node_t *n, *node;
 	feature_list_read_lock();
@@ -1039,6 +1070,13 @@ int match_feature(flow_info_t *flow)
 				return AF_TRUE;
 			}
 		}
+	}
+	if (is_quic_flow(flow)) {
+		AF_LMT_INFO("match quic flow...\n");
+		flow->app_id = FWX_QUIC_PROTO;
+		strcpy(flow->app_name, "QUIC");
+		feature_list_read_unlock();
+		return AF_TRUE;
 	}
 	feature_list_read_unlock();
 	return AF_FALSE;
@@ -1324,10 +1362,11 @@ u_int32_t fwx_hook_bypass_handle(struct sk_buff *skb, struct net_device *dev)
 	{
 		flow.app_id = conn->app_id;
 		flow.drop = conn->drop;
-
-		if (check_app_action_changed(flow.drop, flow.app_id, client)){
-			flow.drop = !flow.drop;
-			AF_LMT_DEBUG("update appid %d action, new action = %s\n", flow.app_id, flow.drop ? "drop" : "accept");
+		if (flow.app_id > 1000){
+			if (check_app_action_changed(flow.drop, flow.app_id, client)){
+				flow.drop = !flow.drop;
+				AF_LMT_DEBUG("update appid %d action, new action = %s\n", flow.app_id, flow.drop ? "drop" : "accept");
+			}
 		}
 	}
 	else{
@@ -1353,16 +1392,21 @@ u_int32_t fwx_hook_bypass_handle(struct sk_buff *skb, struct net_device *dev)
 		update_url_visiting_info(client, &flow);
 		af_update_active_host_list(client, &flow);
 
-		if (match_feature(&flow)){
+	 	if (fwx_match_feature(&flow)){
 			conn->app_id = flow.app_id;
 			conn->drop = flow.drop;
-			if (flow.feature && flow.feature->ignore){
-				AF_LMT_DEBUG("match ignore feature, feature = %s, appid = %d\n", flow.feature->feature ,flow.app_id);
+			if (flow.app_id < 1000){ 
 				conn->ignore = 1;
 			}
 			else{
-				conn->ignore = 0;
-			}
+				if (flow.feature && flow.feature->ignore){
+					AF_LMT_DEBUG("match ignore feature, feature = %s, appid = %d\n", flow.feature->feature ,flow.app_id);
+					conn->ignore = 1;
+				}
+				else{
+					conn->ignore = 0;
+				}
+	 		}
 			conn->state = AF_CONN_DPI_FINISHED;
 			if (!conn->ignore)
 				af_update_active_app_list(client, &flow);
@@ -1458,11 +1502,20 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 	if (ct->fwx_data.app_id != 0)
 	{
 		app_id = ct->fwx_data.app_id;
+		
+		AF_LMT_DEBUG("ct appid = %d\n", app_id);
 		u_int32_t orig_action = ct->fwx_data.action;
 
 		int ct_action = ct->fwx_data.action;
 		flow.ignore = (ct->fwx_data.match_status & 0x1) ? 1 : 0;
 
+
+		if (app_id > 0 && app_id < 1000){
+			if (g_appfilter_enable && ct_action) {
+				AF_LMT_DEBUG("ct drop appid = %d\n", app_id);
+				return NF_DROP;
+			}
+		}
 
 		if (app_id > 1000 && app_id < 32000)
 		{
@@ -1525,9 +1578,13 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 		ct->fwx_data.match_status &= ~0x2;
 	}
 
-	if (match_feature(&flow)){
+
+	if (fwx_match_feature(&flow)){
 		ct->fwx_data.app_id = flow.app_id;
-		if (flow.feature && flow.feature->ignore){
+		if (flow.app_id < 1000){
+			flow.ignore = 1;
+		}
+		else if (flow.feature && flow.feature->ignore){
 			ct->fwx_data.match_status |= 0x1;  
 			flow.ignore = 1;
 			AF_LMT_DEBUG("gateway set ignore bit, match_status = %u\n", ct->fwx_data.match_status);
@@ -1536,7 +1593,7 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 		if (match_app_filter_rule(flow.app_id, client)) {
 			flow.drop = 1;
 			ct->fwx_data.action = 1;  
-			AF_LMT_WARN("##Drop App filter rule, appid = %d, mac = " MAC_FMT "\n", 
+			AF_LMT_INFO("##Drop App filter rule, appid = %d, mac = " MAC_FMT "\n", 
 					flow.app_id, MAC_ARRAY(client->mac));
 			if (skb->protocol == htons(ETH_P_IP) && g_tcp_rst){
 			#if LINUX_VERSION_CODE > KERNEL_VERSION(5,10,197)

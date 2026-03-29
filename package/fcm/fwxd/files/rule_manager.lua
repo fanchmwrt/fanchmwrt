@@ -180,7 +180,9 @@ local function set_appfilter_rule_app_id_list(rule_id, app_id_list)
     if #app_id_list > 0 then
         local app_id_strs = {}
         for _, app_id in ipairs(app_id_list) do
-            table.insert(app_id_strs, tostring(app_id))
+            local token = tostring(app_id)
+            token = token:gsub("\\", "\\\\"):gsub("\"", "\\\"")
+            table.insert(app_id_strs, string.format('"%s"', token))
         end 
         app_id_array_str = "[" .. table.concat(app_id_strs, ",") .. "]"
     else
@@ -194,6 +196,24 @@ local function set_appfilter_rule_app_id_list(rule_id, app_id_list)
         return true
     else
         log(string.format("AppFilter: App ID list for rule %d set failed", rule_id))
+        return false
+    end
+end
+
+local function set_appfilter_rule_filter_quic(rule_id, filter_quic)
+    local filter_quic_value = tonumber(filter_quic) or 0
+    if filter_quic_value ~= 1 then
+        filter_quic_value = 0
+    end
+
+    log(string.format("AppFilter: Setting filter_quic for rule %d, value=%d", rule_id, filter_quic_value))
+    local json_str = string.format('{"api":"mod_app_filter_rule","data":{"rule_id":%d,"filter_quic":%d}}',
+        rule_id, filter_quic_value)
+    if write_to_dev_fwx(json_str) then
+        log(string.format("AppFilter: filter_quic for rule %d set successfully", rule_id))
+        return true
+    else
+        log(string.format("AppFilter: filter_quic for rule %d set failed", rule_id))
         return false
     end
 end
@@ -298,6 +318,7 @@ local function load_appfilter_rules()
             name = section.name or "",
             mode = tonumber(section.mode) or 1,
             enabled = tonumber(section.enabled) or 1,
+            filter_quic = tonumber(section.filter_quic) or 0,
             user_mac = section.user_mac or "",
             time_rules = {},
             app_ids = {}
@@ -305,10 +326,9 @@ local function load_appfilter_rules()
         
         if section.app_id then
             local app_ids = type(section.app_id) == "table" and section.app_id or {section.app_id}
-            for _, app_id_str in ipairs(app_ids) do
-                local app_id = tonumber(app_id_str)
-                if app_id and app_id > 0 then
-                    table.insert(rule.app_ids, app_id)
+            for _, app_id_token in ipairs(app_ids) do
+                if app_id_token and app_id_token ~= "" then
+                    table.insert(rule.app_ids, tostring(app_id_token))
                 end
             end
         end
@@ -500,6 +520,12 @@ local function process_appfilter_rules(current_info)
                         end
                     end
                 end
+
+                if not config_changed then
+                    if (tonumber(rule.filter_quic) or 0) ~= (tonumber(current_state.filter_quic) or 0) then
+                        config_changed = true
+                    end
+                end
             end
             
             if not is_active or config_changed then
@@ -521,6 +547,10 @@ local function process_appfilter_rules(current_info)
                     
                     if set_appfilter_rule_app_id_list(rule.id, app_id_list) then
                         appfilter_rules_state[rule.id].app_id_list = app_id_list
+                    end
+
+                    if set_appfilter_rule_filter_quic(rule.id, rule.filter_quic) then
+                        appfilter_rules_state[rule.id].filter_quic = tonumber(rule.filter_quic) or 0
                     end
                     
                     appfilter_rules_state[rule.id].active = true
@@ -1027,7 +1057,8 @@ local function initialize_rules()
         appfilter_rules_state[rule.id] = {
             active = false,
             name = rule.name,
-            mode = rule.mode
+            mode = rule.mode,
+            filter_quic = tonumber(rule.filter_quic) or 0
         }
     end
     
@@ -1098,7 +1129,8 @@ local function main_loop()
                 appfilter_rules_state[rule.id] = {
                     active = false,
                     name = rule.name,
-                    mode = rule.mode
+                    mode = rule.mode,
+                    filter_quic = tonumber(rule.filter_quic) or 0
                 }
             end
             log(string.format("AppFilter rules reinitialized: %d rules", #appfilter_rules))

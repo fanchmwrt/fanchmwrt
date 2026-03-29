@@ -38,6 +38,9 @@
 #define MIN_FEATURE_LINE_LEN 16
 #define MAX_URL_MATCH_LEN 64
 #define MAX_BYPASS_DPI_PKT_LEN 600
+
+#define FWX_QUIC_PROTO 10
+
 extern u_int32_t fwx_log_level;
 
 

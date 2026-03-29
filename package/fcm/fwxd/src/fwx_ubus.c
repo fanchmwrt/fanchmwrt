@@ -27,6 +27,7 @@
 #include "fwx_mac_filter.h"
 #include "fwx_network.h"
 #include "fwx_system.h"
+#include "fwx_stat.h"
 #include <fcntl.h>
 #include <unistd.h>
 #include <libubox/list.h>
@@ -59,6 +60,9 @@ struct ubus_context *ubus_ctx = NULL;
 static struct blob_buf b;
 
 extern char *format_time(int timetamp);
+
+
+
 
 void ubus_response_json(struct ubus_context *ctx, struct ubus_request_data *req, struct json_object *response){
     struct blob_buf b_buf = {};
@@ -718,6 +722,7 @@ void all_users_callback(void *arg, client_node_t *client)
     
     json_object_object_add(user_obj, "mac", json_object_new_string(client->mac));
     json_object_object_add(user_obj, "online", json_object_new_int(client->online));
+    json_object_object_add(user_obj, "active", json_object_new_int(client->active));
     json_object_object_add(user_obj, "online_time", json_object_new_int(client->online_time));
     json_object_object_add(user_obj, "offline_time", json_object_new_int(client->offline_time));
 
@@ -2359,12 +2364,7 @@ static struct json_object *get_dashboard_system_status(void) {
     json_object_object_add(system_status, "cpu", json_object_new_string(buf));
     
 
-    int connections = 0;
-    memset(result, 0, sizeof(result));
-
-    if (exec_with_result_line("cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null", result, sizeof(result)) == 0) {
-        connections = atoi(result);
-    }
+    int connections = fwx_stat_read_conntrack_count();
     json_object_object_add(system_status, "connections", json_object_new_int(connections));
     
     
@@ -4008,6 +4008,7 @@ struct json_object *fwx_api_get_user_basic_info(struct json_object *req_obj) {
             json_object_object_add(data_obj, "nickname", json_object_new_string(client->nickname));
             json_object_object_add(data_obj, "hostname", json_object_new_string(client->hostname));
             json_object_object_add(data_obj, "online", json_object_new_int(client->online));
+            json_object_object_add(data_obj, "active", json_object_new_int(client->active));
             
 
             daily_hourly_stat_t *today_stat = get_today_stat(client);
@@ -4126,6 +4127,135 @@ struct json_object *fwx_api_get_online_offline_records(struct json_object *req_o
     json_object_object_add(data_obj, "count", json_object_new_int(record_count));
     
     LOG_DEBUG("fwx_api_get_online_offline_records: success, returning %d records for mac=%s\n", record_count, mac);
+    return fwx_gen_api_response_data(API_CODE_SUCCESS, data_obj);
+}
+
+struct json_object *fwx_api_get_user_records(struct json_object *req_obj) {
+    struct json_object *data_obj = json_object_new_object();
+    struct json_object *list_obj = json_object_new_array();
+    struct json_object *mac_obj = NULL;
+    struct json_object *start_obj = NULL;
+    struct json_object *end_obj = NULL;
+    struct json_object *page_obj = NULL;
+    struct json_object *page_size_obj = NULL;
+    const char *mac_filter = NULL;
+    u_int32_t start_time = 0;
+    u_int32_t end_time = 0;
+    int page = 1;
+    int page_size = 15;
+    int total_num = 0;
+    int total_page = 1;
+    int start_idx = 0;
+    int end_idx = 0;
+    int idx = 0;
+    user_record_t *record = NULL;
+
+    if (req_obj) {
+        if (json_object_object_get_ex(req_obj, "mac", &mac_obj) && mac_obj) {
+            mac_filter = json_object_get_string(mac_obj);
+        }
+        if (json_object_object_get_ex(req_obj, "start_time", &start_obj) && start_obj) {
+            start_time = (u_int32_t)json_object_get_int64(start_obj);
+        }
+        if (json_object_object_get_ex(req_obj, "end_time", &end_obj) && end_obj) {
+            end_time = (u_int32_t)json_object_get_int64(end_obj);
+        }
+        if (json_object_object_get_ex(req_obj, "page", &page_obj) && page_obj) {
+            page = json_object_get_int(page_obj);
+            if (page < 1) page = 1;
+        }
+        if (json_object_object_get_ex(req_obj, "page_size", &page_size_obj) && page_size_obj) {
+            page_size = json_object_get_int(page_size_obj);
+            if (page_size < 1) page_size = 15;
+            if (page_size > 200) page_size = 200;
+        }
+    }
+
+    list_for_each_entry(record, &user_record_list, list) {
+        if (mac_filter && strlen(mac_filter) > 0) {
+            if (!strstr(record->mac, mac_filter)) {
+                continue;
+            }
+        }
+        if (start_time > 0 && record->timestamp < start_time) {
+            continue;
+        }
+        if (end_time > 0 && record->timestamp > end_time) {
+            continue;
+        }
+        total_num++;
+    }
+
+    total_page = (total_num + page_size - 1) / page_size;
+    if (total_page < 1) total_page = 1;
+    if (page > total_page) page = total_page;
+    start_idx = (page - 1) * page_size;
+    end_idx = start_idx + page_size;
+
+    idx = 0;
+    list_for_each_entry(record, &user_record_list, list) {
+        int i = 0;
+        char time_str[64] = {0};
+        struct json_object *item = NULL;
+        struct json_object *apps_obj = NULL;
+        time_t t;
+        struct tm *tm_info = NULL;
+
+        if (mac_filter && strlen(mac_filter) > 0) {
+            if (!strstr(record->mac, mac_filter)) {
+                continue;
+            }
+        }
+        if (start_time > 0 && record->timestamp < start_time) {
+            continue;
+        }
+        if (end_time > 0 && record->timestamp > end_time) {
+            continue;
+        }
+        if (idx < start_idx) {
+            idx++;
+            continue;
+        }
+        if (idx >= end_idx) {
+            break;
+        }
+
+        item = json_object_new_object();
+        t = (time_t)record->timestamp;
+        tm_info = localtime(&t);
+        if (tm_info) {
+            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
+        }
+        json_object_object_add(item, "timestamp", json_object_new_int64(record->timestamp));
+        json_object_object_add(item, "time_str", json_object_new_string(time_str));
+        json_object_object_add(item, "action", json_object_new_int(record->action));
+        json_object_object_add(item, "action_str", json_object_new_string(record->action == 0 ? "online" : "offline"));
+        json_object_object_add(item, "mac", json_object_new_string(record->mac));
+        json_object_object_add(item, "nickname", json_object_new_string(record->nickname));
+        json_object_object_add(item, "hostname", json_object_new_string(record->hostname));
+        json_object_object_add(item, "up_bytes", json_object_new_int64(record->up_bytes));
+        json_object_object_add(item, "down_bytes", json_object_new_int64(record->down_bytes));
+        json_object_object_add(item, "online_duration", json_object_new_int64(record->online_duration));
+        json_object_object_add(item, "active_duration", json_object_new_int64(record->active_duration));
+
+        apps_obj = json_object_new_array();
+        for (i = 0; i < record->recent_app_count; i++) {
+            int appid = record->recent_apps[i];
+            struct json_object *app_obj = json_object_new_object();
+            json_object_object_add(app_obj, "id", json_object_new_int(appid));
+            json_object_object_add(app_obj, "name", json_object_new_string(get_app_name_by_id(appid)));
+            json_object_array_add(apps_obj, app_obj);
+        }
+        json_object_object_add(item, "recent_apps", apps_obj);
+        json_object_array_add(list_obj, item);
+        idx++;
+    }
+
+    json_object_object_add(data_obj, "total_num", json_object_new_int(total_num));
+    json_object_object_add(data_obj, "total_page", json_object_new_int(total_page));
+    json_object_object_add(data_obj, "page", json_object_new_int(page));
+    json_object_object_add(data_obj, "page_size", json_object_new_int(page_size));
+    json_object_object_add(data_obj, "list", list_obj);
     return fwx_gen_api_response_data(API_CODE_SUCCESS, data_obj);
 }
 
@@ -4449,15 +4579,40 @@ struct json_object *fwx_api_set_dashboard_param(struct json_object *req_obj) {
     return fwx_gen_api_response_data(API_CODE_SUCCESS, NULL);
 }
 
-
 typedef struct json_object * (*fwx_api_handler)(struct json_object *data_obj);
+
+typedef enum {
+    FWX_API_METHOD_GET,
+    FWX_API_METHOD_POST
+} fwx_api_method_t;
 
 typedef struct fwx_api_node{
     char *api_name;
     fwx_api_handler handler;
+    int forward;      
+    fwx_api_method_t method;
 }fwx_api_node_t;
 
+static void fwx_forward_to_agent(struct json_object *req_obj) {
+	char *cmd_buf = NULL;
+	if (!req_obj)
+		return;
+	LOG_WARN("forward to agent\n");
+    const char *req_str = json_object_to_json_string(req_obj);
+	LOG_WARN("forward to agent req_str = %s\n", req_str);
+	int buf_len = strlen(req_str) + 128;
+	cmd_buf = (char *)malloc(buf_len);
+	if (!cmd_buf)
+		return;
+    snprintf(cmd_buf, buf_len, "ubus -t 2 call fwx_agent forward '%s'", req_str);
+	
+	LOG_WARN("forward cmd buf = %s\n", cmd_buf);
+  	system(cmd_buf);
+	free(cmd_buf);
+}
+
 struct json_object *fwx_api_get_dashboard_common(struct json_object *req_obj);
+struct json_object *fwx_api_get_history_session(struct json_object *req_obj);
 struct json_object *fwx_api_get_hourly_top_apps(struct json_object *req_obj);
 struct json_object *fwx_api_get_daily_top_apps(struct json_object *req_obj);
 struct json_object *fwx_api_delete_record_files(struct json_object *req_obj);
@@ -4471,6 +4626,7 @@ struct json_object *fwx_api_update_filter_rule(struct json_object *req_obj);
 struct json_object *fwx_api_delete_filter_rule(struct json_object *req_obj);
 struct json_object *fwx_api_get_user_basic_info(struct json_object *req_obj);
 struct json_object *fwx_api_get_online_offline_records(struct json_object *req_obj);
+struct json_object *fwx_api_get_user_records(struct json_object *req_obj);
 struct json_object *fwx_api_get_record_base(struct json_object *req_obj);
 struct json_object *fwx_api_set_record_base(struct json_object *req_obj);
 struct json_object *fwx_api_record_action(struct json_object *req_obj);
@@ -4490,67 +4646,69 @@ struct json_object *fwx_api_set_dashboard_param(struct json_object *req_obj);
 
 
 static fwx_api_node_t fwx_api_node_list[] = {
-    {"get_dashboard_common", fwx_api_get_dashboard_common},
-    {"get_hourly_top_apps", fwx_api_get_hourly_top_apps},
-    {"get_daily_top_apps", fwx_api_get_daily_top_apps},
-    {"delete_record_files", fwx_api_delete_record_files},
-    {"get_global_app_type_stats", fwx_api_get_global_app_type_stats},
-    {"get_global_traffic_stats", fwx_api_get_global_traffic_stats},
-    {"get_daily_top_users", fwx_api_get_daily_top_users},
-    {"get_active_users", fwx_api_get_active_users},
-    {"get_filter_rules", fwx_api_get_filter_rules},
-    {"add_filter_rule", fwx_api_add_filter_rule},
-    {"update_filter_rule", fwx_api_update_filter_rule},
-    {"delete_filter_rule", fwx_api_delete_filter_rule},
-    {"get_user_basic_info", fwx_api_get_user_basic_info},
-    {"get_online_offline_records", fwx_api_get_online_offline_records},
-    {"get_appfilter_whitelist", fwx_api_get_appfilter_whitelist},
-    {"add_appfilter_whitelist", fwx_api_add_appfilter_whitelist},
-    {"del_appfilter_whitelist", fwx_api_del_appfilter_whitelist},
-    {"get_app_filter_adv", fwx_api_get_app_filter_adv},
-    {"set_app_filter_adv", fwx_api_set_app_filter_adv},
-    {"get_system_info", fwx_api_get_system_info},
-    {"set_system_info", fwx_api_set_system_info},
-    {"get_mac_filter_rules", fwx_api_get_mac_filter_rules},
-    {"add_mac_filter_rule", fwx_api_add_mac_filter_rule},
-    {"update_mac_filter_rule", fwx_api_update_mac_filter_rule},
-    {"delete_mac_filter_rule", fwx_api_delete_mac_filter_rule},
-    {"get_mac_filter_whitelist", fwx_api_get_mac_filter_whitelist},
-    {"add_mac_filter_whitelist", fwx_api_add_mac_filter_whitelist},
-    {"del_mac_filter_whitelist", fwx_api_del_mac_filter_whitelist},
-    {"get_mac_filter_adv", fwx_api_get_mac_filter_adv},
-    {"set_mac_filter_adv", fwx_api_set_mac_filter_adv},
-    {"get_record_base", fwx_api_get_record_base},
-    {"set_record_base", fwx_api_set_record_base},
-    {"record_action", fwx_api_record_action},
-    {"get_lan_list", fwx_api_get_lan_list},
-    {"add_lan", fwx_api_add_lan},
-    {"mod_lan", fwx_api_mod_lan},
-    {"del_lan", fwx_api_del_lan},
-    {"get_wan_list", fwx_api_get_wan_list},
-    {"add_wan", fwx_api_add_wan},
-    {"mod_wan", fwx_api_mod_wan},
-    {"del_wan", fwx_api_del_wan},
-    {"get_lan_info", fwx_api_get_lan_info},
-    {"set_lan_info", fwx_api_set_lan_info},
-    {"get_wan_info", fwx_api_get_wan_info},
-    {"set_wan_info", fwx_api_set_wan_info},
-    {"get_work_mode", fwx_api_get_work_mode},
-    {"set_work_mode", fwx_api_set_work_mode},
-    {"set_nickname", fwx_api_set_nickname},
-    {"dev_visit_list", fwx_api_dev_visit_list},
-    {"dev_visit_time", fwx_api_dev_visit_time},
-    {"app_class_visit_time", fwx_api_app_class_visit_time},
-    {"dev_list", fwx_api_dev_list},
-    {"class_list", fwx_api_class_list},
-    {"get_all_users", fwx_api_get_all_users},
-    {"get_oaf_status", fwx_api_get_oaf_status},
-    {"visit_list", fwx_api_visit_list},
-    {"get_device_list", fwx_api_get_device_list},
-    {"get_dashboard_param", fwx_api_get_dashboard_param},
-    {"set_dashboard_param", fwx_api_set_dashboard_param},
+    {"get_dashboard_common", fwx_api_get_dashboard_common, 0, FWX_API_METHOD_GET},
+    {"get_history_session", fwx_api_get_history_session, 0, FWX_API_METHOD_GET},
+    {"get_hourly_top_apps", fwx_api_get_hourly_top_apps, 0, FWX_API_METHOD_GET},
+    {"get_daily_top_apps", fwx_api_get_daily_top_apps, 0, FWX_API_METHOD_GET},
+    {"delete_record_files", fwx_api_delete_record_files, 0, FWX_API_METHOD_POST},
+    {"get_global_app_type_stats", fwx_api_get_global_app_type_stats, 0, FWX_API_METHOD_GET},
+    {"get_global_traffic_stats", fwx_api_get_global_traffic_stats, 0, FWX_API_METHOD_GET},
+    {"get_daily_top_users", fwx_api_get_daily_top_users, 0, FWX_API_METHOD_GET},
+    {"get_active_users", fwx_api_get_active_users, 0, FWX_API_METHOD_GET},
+    {"get_filter_rules", fwx_api_get_filter_rules, 0, FWX_API_METHOD_GET},
+    {"add_filter_rule", fwx_api_add_filter_rule, 1, FWX_API_METHOD_POST},
+    {"update_filter_rule", fwx_api_update_filter_rule, 1, FWX_API_METHOD_POST},
+    {"delete_filter_rule", fwx_api_delete_filter_rule, 1, FWX_API_METHOD_POST},
+    {"get_user_basic_info", fwx_api_get_user_basic_info, 0, FWX_API_METHOD_GET},
+    {"get_online_offline_records", fwx_api_get_online_offline_records, 0, FWX_API_METHOD_GET},
+    {"get_user_records", fwx_api_get_user_records, 0, FWX_API_METHOD_GET},
+    {"get_appfilter_whitelist", fwx_api_get_appfilter_whitelist, 0, FWX_API_METHOD_GET},
+    {"add_appfilter_whitelist", fwx_api_add_appfilter_whitelist, 1, FWX_API_METHOD_POST},
+    {"del_appfilter_whitelist", fwx_api_del_appfilter_whitelist, 1, FWX_API_METHOD_POST},
+    {"get_app_filter_adv", fwx_api_get_app_filter_adv, 0, FWX_API_METHOD_GET},
+    {"set_app_filter_adv", fwx_api_set_app_filter_adv, 1, FWX_API_METHOD_POST},
+    {"get_system_info", fwx_api_get_system_info, 0, FWX_API_METHOD_GET},
+    {"set_system_info", fwx_api_set_system_info, 1, FWX_API_METHOD_POST},
+    {"get_mac_filter_rules", fwx_api_get_mac_filter_rules, 0, FWX_API_METHOD_GET},
+    {"add_mac_filter_rule", fwx_api_add_mac_filter_rule, 1, FWX_API_METHOD_POST},
+    {"update_mac_filter_rule", fwx_api_update_mac_filter_rule, 1, FWX_API_METHOD_POST},
+    {"delete_mac_filter_rule", fwx_api_delete_mac_filter_rule, 1, FWX_API_METHOD_POST},
+    {"get_mac_filter_whitelist", fwx_api_get_mac_filter_whitelist, 0, FWX_API_METHOD_GET},
+    {"add_mac_filter_whitelist", fwx_api_add_mac_filter_whitelist, 1, FWX_API_METHOD_POST},
+    {"del_mac_filter_whitelist", fwx_api_del_mac_filter_whitelist, 1, FWX_API_METHOD_POST},
+    {"get_mac_filter_adv", fwx_api_get_mac_filter_adv, 0, FWX_API_METHOD_GET},
+    {"set_mac_filter_adv", fwx_api_set_mac_filter_adv, 1, FWX_API_METHOD_POST},
+    {"get_record_base", fwx_api_get_record_base, 0, FWX_API_METHOD_GET},
+    {"set_record_base", fwx_api_set_record_base, 1, FWX_API_METHOD_POST},
+    {"record_action", fwx_api_record_action, 0, FWX_API_METHOD_POST},
+    {"get_lan_list", fwx_api_get_lan_list, 0, FWX_API_METHOD_GET},
+    {"add_lan", fwx_api_add_lan, 1, FWX_API_METHOD_POST},
+    {"mod_lan", fwx_api_mod_lan, 1, FWX_API_METHOD_POST},
+    {"del_lan", fwx_api_del_lan, 1, FWX_API_METHOD_POST},
+    {"get_wan_list", fwx_api_get_wan_list, 0, FWX_API_METHOD_GET},
+    {"add_wan", fwx_api_add_wan, 1, FWX_API_METHOD_POST},
+    {"mod_wan", fwx_api_mod_wan, 1, FWX_API_METHOD_POST},
+    {"del_wan", fwx_api_del_wan, 1, FWX_API_METHOD_POST},
+    {"get_lan_info", fwx_api_get_lan_info, 0, FWX_API_METHOD_GET},
+    {"set_lan_info", fwx_api_set_lan_info, 1, FWX_API_METHOD_POST},
+    {"get_wan_info", fwx_api_get_wan_info, 0, FWX_API_METHOD_GET},
+    {"set_wan_info", fwx_api_set_wan_info, 1, FWX_API_METHOD_POST},
+    {"get_work_mode", fwx_api_get_work_mode, 0, FWX_API_METHOD_GET},
+    {"set_work_mode", fwx_api_set_work_mode, 1, FWX_API_METHOD_POST},
+    {"set_nickname", fwx_api_set_nickname, 1, FWX_API_METHOD_POST},
+    {"dev_visit_list", fwx_api_dev_visit_list, 0, FWX_API_METHOD_GET},
+    {"dev_visit_time", fwx_api_dev_visit_time, 0, FWX_API_METHOD_GET},
+    {"app_class_visit_time", fwx_api_app_class_visit_time, 0, FWX_API_METHOD_GET},
+    {"dev_list", fwx_api_dev_list, 0, FWX_API_METHOD_GET},
+    {"class_list", fwx_api_class_list, 0, FWX_API_METHOD_GET},
+    {"get_all_users", fwx_api_get_all_users, 0, FWX_API_METHOD_GET},
+    {"get_oaf_status", fwx_api_get_oaf_status, 0, FWX_API_METHOD_GET},
+    {"visit_list", fwx_api_visit_list, 0, FWX_API_METHOD_GET},
+    {"get_device_list", fwx_api_get_device_list, 0, FWX_API_METHOD_GET},
+    {"get_dashboard_param", fwx_api_get_dashboard_param, 0, FWX_API_METHOD_GET},
+    {"set_dashboard_param", fwx_api_set_dashboard_param, 1, FWX_API_METHOD_POST},
 
-    {NULL, NULL}
+    {NULL, NULL, 0, FWX_API_METHOD_GET}
 };
 
 int ubus_handle_common(struct ubus_context *ctx, struct ubus_object *obj, struct ubus_request_data *req, 
@@ -4607,6 +4765,12 @@ int ubus_handle_common(struct ubus_context *ctx, struct ubus_object *obj, struct
         response_obj = api_node->handler(data_obj);
         if (response_obj) {
             ubus_response_json(ctx, req, response_obj);
+            if (api_node->forward) {
+                struct json_object *code_obj = json_object_object_get(response_obj, "code");
+                if (code_obj && json_object_get_int(code_obj) == API_CODE_SUCCESS) {
+                    fwx_forward_to_agent(req_obj);
+                }
+            }
         } else {
             LOG_ERROR("Handler returned NULL for API: %s\n", api_name);
             response_obj = fwx_gen_api_response_data(API_CODE_ERROR, NULL);

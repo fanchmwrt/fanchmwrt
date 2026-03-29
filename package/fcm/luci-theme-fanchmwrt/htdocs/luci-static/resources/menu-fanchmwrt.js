@@ -11,7 +11,7 @@ return baseclass.extend({
 		'fwx_dashboard': 'fwx_dashboard',
 		'fwx_internet_record': 'fwx_internet_record',
 		'fwx_user': 'fwx_user',
-		'fwx_wireless': 'fwx_wireless',
+		'fwx_monitor': 'fwx_monitor',
 	},
 	defaultIcon: 'default',
 	__init__() {
@@ -93,10 +93,15 @@ return baseclass.extend({
 		}
 
 		const isWide = this.isWideScreen();
-		if (isWide) {
-		this.renderMainMenu(node, url, currentLevel);
-		} else {
-			this.renderMobileMenu(node, url, currentLevel);
+		const menuSelector = isWide ? '#topmenu' : '#topmenu-mobile';
+		const menuContainer = document.querySelector(menuSelector);
+		const hasRenderedMenu = !!(menuContainer && menuContainer.children.length > 0);
+		if (!hasRenderedMenu) {
+			if (isWide) {
+				this.renderMainMenu(node, url, currentLevel);
+			} else {
+				this.renderMobileMenu(node, url, currentLevel);
+			}
 		}
 		
 		setTimeout(() => {
@@ -110,38 +115,116 @@ return baseclass.extend({
 		const isWide = this.isWideScreen();
 		
 		if (isWide) {
-			const existingBrand = document.querySelector('header > a.brand');
-			let brandElement = null;
-			if (existingBrand) {
-				brandElement = existingBrand.cloneNode(true);
-				brandElement.classList.add('top-navbar-brand');
-				existingBrand.remove();
-			}
+			const titleText = 'FanchmWrt';
+			const brandElement = E('a', { 'class': 'top-navbar-brand', 'href': L.url('admin', 'fwx_dashboard') }, [
+				E('span', { 'class': 'top-navbar-title' }, [titleText])
+			]);
+			brandElement.addEventListener('click', function() {
+				localStorage.setItem('luci-menu-category', 'basic');
+			});
 			
-		const basicLink = E('a', { 'href': L.url('admin', 'fwx_dashboard') }, [_('Basic Settings')]);
-		
-		basicLink.addEventListener('click', function(e) {
-			localStorage.setItem('luci-menu-category', 'basic');
-		});
-		
-		const advancedLink = E('a', { 'href': L.url('admin', 'status', 'overview') }, [_('Advance Settings')]);
-		
-		advancedLink.addEventListener('click', function(e) {
-			localStorage.setItem('luci-menu-category', 'advanced');
-		});
-		
-			const navTabs = E('ul', { 'class': 'nav-tabs' }, [
-				E('li', { 'class': savedCategory === 'basic' ? 'active' : '', 'data-category': 'basic' }, [
-				basicLink
+			const createModeItem = (category, title, href) => {
+				const item = E('li', {
+					'class': 'mode-item' + (savedCategory === category ? ' active' : ''),
+					'data-category': category
+				}, [
+					E('a', { 'href': href }, [
+						E('span', { 'class': 'mode-check' }, [
+							E('img', { 'src': '/luci-static/fanchmwrt/icons/fwx_check.png', 'alt': '' })
+						]),
+						E('span', { 'class': 'mode-title' }, [_(title)])
+					])
+				]);
+
+				item.querySelector('a').addEventListener('click', function() {
+					localStorage.setItem('luci-menu-category', category);
+				});
+
+				return item;
+			};
+
+			const modeMenu = E('div', { 'class': 'top-user-menu top-mode-menu' }, [
+				E('button', {
+					'class': 'top-user-button top-more-button',
+					'type': 'button',
+					'aria-label': _('Mode menu')
+				}, [
+					E('span', { 'class': 'top-more-icon' }, ['⋮'])
 				]),
-				E('li', { 'class': savedCategory === 'advanced' ? 'active' : '', 'data-category': 'advanced' }, [
-				advancedLink
-			])
-		]);
+				E('ul', { 'class': 'top-user-dropdown top-mode-dropdown' }, [
+					createModeItem('basic', 'Normal Mode', L.url('admin', 'fwx_dashboard')),
+					createModeItem('advanced', 'Advanced Mode', L.url('admin', 'status', 'overview'))
+				])
+			]);
+
+			const userMenu = E('div', { 'class': 'top-user-menu top-profile-menu' }, [
+				E('button', {
+					'class': 'top-user-button',
+					'type': 'button',
+					'aria-label': _('User menu')
+				}, [
+					E('span', { 'class': 'top-user-icon', 'aria-hidden': 'true' })
+				]),
+				E('ul', { 'class': 'top-user-dropdown top-profile-dropdown' }, [
+					E('li', { 'class': 'logout-item' }, [
+						E('a', { 'href': '#' }, [_('Logout')])
+					])
+				])
+			]);
+
+			const closeTopMenus = () => {
+				userMenu.classList.remove('open');
+				modeMenu.classList.remove('open');
+			};
+
+			const userBtn = userMenu.querySelector('.top-user-button');
+			userBtn.addEventListener('click', function(ev) {
+				ev.preventDefault();
+				ev.stopPropagation();
+				const shouldOpen = !userMenu.classList.contains('open');
+				closeTopMenus();
+				if (shouldOpen) {
+					userMenu.classList.add('open');
+				}
+			});
+
+			const modeBtn = modeMenu.querySelector('.top-more-button');
+			modeBtn.addEventListener('click', function(ev) {
+				ev.preventDefault();
+				ev.stopPropagation();
+				const shouldOpen = !modeMenu.classList.contains('open');
+				closeTopMenus();
+				if (shouldOpen) {
+					modeMenu.classList.add('open');
+				}
+			});
+
+			const logoutLink = userMenu.querySelector('.logout-item a');
+			logoutLink.addEventListener('click', function(ev) {
+				ev.preventDefault();
+				ev.stopPropagation();
+				closeTopMenus();
+				window.dispatchEvent(new CustomEvent('logout', {
+					detail: { source: 'top-profile-menu' }
+				}));
+				window.location.href = L.url('admin', 'logout');
+			});
+
+			document.addEventListener('click', function(ev) {
+				if (!userMenu.contains(ev.target) && !modeMenu.contains(ev.target)) {
+					closeTopMenus();
+				}
+			});
+
+			document.addEventListener('keydown', function(ev) {
+				if (ev.key === 'Escape') {
+					closeTopMenus();
+				}
+			});
 
 			const topNavbarContent = E('div', { 'class': 'top-navbar-content' }, [
-				brandElement || E('a', { 'class': 'top-navbar-brand', 'href': '/' }, [document.querySelector('title')?.textContent?.split(' - ')[0] || '?']),
-				navTabs
+				brandElement,
+				E('div', { 'class': 'top-navbar-right' }, [userMenu, modeMenu])
 			]);
 			const topNavbar = E('div', { 'class': 'top-navbar' }, [topNavbarContent]);
 
@@ -239,6 +322,12 @@ return baseclass.extend({
 		}
 		}
 
+		const modeItems = document.querySelectorAll('.top-user-dropdown .mode-item');
+		modeItems.forEach((item) => {
+			const isActive = item.getAttribute('data-category') === category;
+			item.classList.toggle('active', isActive);
+		});
+
 		const menuContainer = document.querySelector('#topmenu');
 		
 		if (menuContainer) {
@@ -316,7 +405,9 @@ return baseclass.extend({
 			'fwx_internet_record',
 			'fwx_advance',    
 			'fwx_network',
-			'logout'
+			'fwx_session_stat',
+			'fwx_user_record',
+			'fwx_monitor',
 		];
 
 		const normalizedName = (menuName || '').toLowerCase();
@@ -602,22 +693,30 @@ return baseclass.extend({
 
 	renderModeMenu(tree) {
 		const ul = document.querySelector('#modemenu');
+		if (!ul) {
+			return;
+		}
+		ul.innerHTML = '';
 		const children = ui.menu.getChildren(tree);
 
-		
+		const isWide = this.isWideScreen();
+		if (isWide) {
+			ul.style.display = 'none';
+		}
 
 		children.forEach((child, index) => {
 			const isActive = L.env.requestpath.length
 				? child.name === L.env.requestpath[0]
 				: index === 0;
 
-			ul.appendChild(E('li', { 'class': isActive ? 'active' : '' }, [
-				E('a', { 'href': L.url(child.name) }, [ _(child.title) ])
-			]));
+			if (!isWide) {
+				ul.appendChild(E('li', { 'class': isActive ? 'active' : '' }, [
+					E('a', { 'href': L.url(child.name) }, [ _(child.title) ])
+				]));
+			}
 
 			if (isActive) {
 
-				const isWide = this.isWideScreen();
 				if (isWide) {
 				this.renderMainMenu(child, child.name);
 				} else {
@@ -626,7 +725,7 @@ return baseclass.extend({
 			}
 		});
 
-		if (ul.children.length > 1)
+		if (!isWide && ul.children.length > 1)
 			ul.style.display = '';
 
 		setTimeout(() => {

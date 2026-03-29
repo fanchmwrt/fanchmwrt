@@ -10,6 +10,7 @@
 #include <linux/etherdevice.h>
 #include <linux/list.h>
 #include <linux/slab.h>
+#include <linux/kernel.h>
 #include "k_json.h"
 #include "fwx.h"
 #include "fwx_app_filter.h"
@@ -34,7 +35,7 @@ static mac_config_t g_app_filter_whitelist;
 
 static void app_id_config_init(app_id_config_t *config) {
     int i;
-    for (i = 0; i < 256; i++) {
+    for (i = 0; i < APPID_HASH_SIZE; i++) {
         INIT_HLIST_HEAD(&config->hash_table[i]);
     }
     config->count = 0;
@@ -46,7 +47,7 @@ static void flush_app_id_list(app_id_config_t *config) {
     app_id_node_t *node;
     struct hlist_node *n;
     
-    for (i = 0; i < 256; i++) {
+    for (i = 0; i < APPID_HASH_SIZE; i++) {
         hlist_for_each_entry_safe(node, n, &config->hash_table[i], hlist) {
             hlist_del(&node->hlist);
             kfree(node);
@@ -57,7 +58,7 @@ static void flush_app_id_list(app_id_config_t *config) {
 
 
 static app_id_node_t *find_app_id_node(app_id_config_t *config, int app_id) {
-    int hash = app_id % 256;
+    int hash = app_id % APPID_HASH_SIZE;
     app_id_node_t *node;
     
     hlist_for_each_entry(node, &config->hash_table[hash], hlist) {
@@ -90,11 +91,96 @@ static int add_app_id_node(app_id_config_t *config, int app_id) {
     }
     
     node->app_id = app_id;
-    hash = app_id % 256;
+    hash = app_id % APPID_HASH_SIZE;
     hlist_add_head(&node->hlist, &config->hash_table[hash]);
     config->count++;
     
     return 0;
+}
+
+static int add_app_id_token_to_rule(app_filter_rule_t *rule, cJSON *app_id_obj)
+{
+    int start_id = 0, end_id = 0;
+    int single_id = 0;
+    int i = 0;
+    const char *token = NULL;
+
+	
+    if (!rule || !app_id_obj) {
+        return -1;
+    }
+
+    if (app_id_obj->type == cJSON_Number) {
+        if (app_id_obj->valueint > 0) {
+            return add_app_id_node(&rule->app_id_list, app_id_obj->valueint);
+        }
+        return -1;
+    }
+
+    if (app_id_obj->type != cJSON_String || !app_id_obj->valuestring) {
+        return -1;
+    }
+
+    token = app_id_obj->valuestring;
+    if (sscanf(token, "%d-%d", &start_id, &end_id) == 2) {
+        if (start_id <= 0 || end_id < start_id) {
+            AF_ERROR("invalid app_id range: %s\n", token);
+            return -1;
+        }
+        for (i = start_id; i <= end_id; i++) {
+			AF_INFO("token parse %s, id = %d\n", token, i);
+            if (add_app_id_node(&rule->app_id_list, i) < 0) {
+                return -1;
+            }
+        }
+        return 0;
+    }
+
+    if (kstrtoint(token, 10, &single_id) == 0 && single_id > 0) {
+        return add_app_id_node(&rule->app_id_list, single_id);
+    }
+
+    AF_ERROR("invalid app_id token: %s\n", token);
+    return -1;
+}
+
+static int del_app_id_token_from_rule(int rule_id, cJSON *app_id_obj)
+{
+    int start_id = 0, end_id = 0;
+    int single_id = 0;
+    int i = 0;
+    const char *token = NULL;
+
+    if (!app_id_obj) {
+        return -1;
+    }
+
+    if (app_id_obj->type == cJSON_Number) {
+        return fwx_del_app_id_from_rule(rule_id, app_id_obj->valueint);
+    }
+
+    if (app_id_obj->type != cJSON_String || !app_id_obj->valuestring) {
+        return -1;
+    }
+
+    token = app_id_obj->valuestring;
+    if (sscanf(token, "%d-%d", &start_id, &end_id) == 2) {
+        if (start_id <= 0 || end_id < start_id) {
+            AF_ERROR("invalid app_id range for delete: %s\n", token);
+            return -1;
+        }
+        for (i = start_id; i <= end_id; i++) {
+            fwx_del_app_id_from_rule(rule_id, i);
+        }
+        return 0;
+    }
+
+    if (kstrtoint(token, 10, &single_id) == 0 && single_id > 0) {
+        return fwx_del_app_id_from_rule(rule_id, single_id);
+    }
+
+    AF_ERROR("invalid app_id token for delete: %s\n", token);
+    return -1;
 }
 
 int fwx_app_filter_init(void) {
@@ -160,6 +246,7 @@ int fwx_add_app_filter_rule(int rule_id) {
     
     rule->rule_id = rule_id;
     rule->enable = 1;
+    rule->filter_quic = 0;
     fwx_mac_config_init(&rule->mac_list);
     app_id_config_init(&rule->app_id_list);
     INIT_LIST_HEAD(&rule->list);
@@ -218,7 +305,7 @@ int fwx_del_app_id_from_rule(int rule_id, int app_id) {
     app_filter_write_lock();
     rule = fwx_find_app_filter_rule(rule_id);
     if (rule) {
-        hash = app_id % 256;
+        hash = app_id % APPID_HASH_SIZE;
         hlist_for_each_entry(node, &rule->app_id_list.hash_table[hash], hlist) {
             if (node->app_id == app_id) {
                 hlist_del(&node->hlist);
@@ -269,6 +356,14 @@ app_filter_rule_t *fwx_match_app_filter_rule(int app_id, const unsigned char *ma
         }
         
 
+        if (app_id == FWX_QUIC_PROTO) {
+            if (rule->filter_quic == 1) {
+                app_filter_read_unlock();
+                return rule;
+            }
+            continue;
+        }
+
         node = find_app_id_node(&rule->app_id_list, app_id);
         if (node) {
             app_filter_read_unlock();
@@ -310,6 +405,7 @@ int fwx_api_mod_app_filter_rule(cJSON *data_obj) {
     cJSON *app_id_obj;
     cJSON *action_obj;
     cJSON *enable_obj;
+    cJSON *filter_quic_obj;
     app_filter_rule_t *rule = NULL;
     
     if (!data_obj) {
@@ -381,7 +477,7 @@ int fwx_api_mod_app_filter_rule(cJSON *data_obj) {
                 for (i = 0; i < cJSON_GetArraySize(app_id_array); i++) {
                     app_id_obj = cJSON_GetArrayItem(app_id_array, i);
                     if (app_id_obj) {
-                        add_app_id_node(&rule->app_id_list, app_id_obj->valueint);
+                        add_app_id_token_to_rule(rule, app_id_obj);
                     }
                 }
                 app_filter_write_unlock();
@@ -391,7 +487,7 @@ int fwx_api_mod_app_filter_rule(cJSON *data_obj) {
             app_id_obj = cJSON_GetObjectItem(data_obj, "app_id");
             if (app_id_obj) {
                 app_filter_write_lock();
-                add_app_id_node(&rule->app_id_list, app_id_obj->valueint);
+                add_app_id_token_to_rule(rule, app_id_obj);
                 app_filter_write_unlock();
             }
         } else {
@@ -405,6 +501,11 @@ int fwx_api_mod_app_filter_rule(cJSON *data_obj) {
     enable_obj = cJSON_GetObjectItem(data_obj, "enable");
     if (enable_obj) {
         rule->enable = enable_obj->valueint;
+    }
+
+    filter_quic_obj = cJSON_GetObjectItem(data_obj, "filter_quic");
+    if (filter_quic_obj) {
+        rule->filter_quic = (filter_quic_obj->valueint == 1) ? 1 : 0;
     }
     
 	fwx_update_appfilter_jiffies();
@@ -429,7 +530,7 @@ int fwx_api_del_app_filter_rule(cJSON *data_obj) {
     app_id_obj = cJSON_GetObjectItem(data_obj, "app_id");
     if (app_id_obj) {
 
-        return fwx_del_app_id_from_rule(rule_id_obj->valueint, app_id_obj->valueint);
+        return del_app_id_token_from_rule(rule_id_obj->valueint, app_id_obj);
     } else {
 
         return fwx_del_app_filter_rule(rule_id_obj->valueint);
@@ -454,9 +555,9 @@ int fwx_api_dump_app_filter_rule(cJSON *data_obj) {
     
 
     printk("\n");
-    printk("+--------+-------+------------------+------------------+\n");
-    printk("| RuleID | Enable| MAC List         | App ID List      |\n");
-    printk("+--------+-------+------------------+------------------+\n");
+    printk("+--------+-------+-----------+------------------+------------------+\n");
+    printk("| RuleID | Enable| FilterQUIC| MAC List         | App ID List      |\n");
+    printk("+--------+-------+-----------+------------------+------------------+\n");
     
     if (rule_id_obj) {
         rule = fwx_find_app_filter_rule(rule_id_obj->valueint);
@@ -467,14 +568,14 @@ int fwx_api_dump_app_filter_rule(cJSON *data_obj) {
                     mac_count++;
                 }
             }
-            for (i = 0; i < 256; i++) {
+            for (i = 0; i < APPID_HASH_SIZE; i++) {
                 hlist_for_each_entry(node, &rule->app_id_list.hash_table[i], hlist) {
                     app_count++;
                 }
             }
             
 
-            printk(KERN_CONT "| %-6d | %-5d | ", rule->rule_id, rule->enable);
+            printk(KERN_CONT "| %-6d | %-5d | %-9d | ", rule->rule_id, rule->enable, rule->filter_quic);
             
 
             if (mac_count == 0) {
@@ -489,7 +590,7 @@ int fwx_api_dump_app_filter_rule(cJSON *data_obj) {
                         }
                         printk(KERN_CONT "%pM", mac_node->mac);
                         mac_count++;
-                        if (mac_count >= 3) {  // 最多显示3个MAC
+                        if (mac_count >= 32) { 
                             if (mac_count < total_mac_count) {
                                 printk(KERN_CONT "...");
                             }
@@ -508,7 +609,7 @@ int fwx_api_dump_app_filter_rule(cJSON *data_obj) {
                 int printed_count = 0;
                 int should_break = 0;
                 app_count = 0;
-                for (i = 0; i < 256 && !should_break; i++) {
+                for (i = 0; i < APPID_HASH_SIZE && !should_break; i++) {
                     hlist_for_each_entry(node, &rule->app_id_list.hash_table[i], hlist) {
                         if (printed_count > 0) {
                             printk(KERN_CONT ", ");
@@ -516,7 +617,7 @@ int fwx_api_dump_app_filter_rule(cJSON *data_obj) {
                         printk(KERN_CONT "%d", node->app_id);
                         printed_count++;
                         app_count++;
-                        if (printed_count >= 5) {  // 最多显示5个App ID
+                        if (printed_count >= 128) { 
                             if (app_count < total_app_count) {
                                 printk(KERN_CONT "...");
                             }
@@ -546,7 +647,7 @@ int fwx_api_dump_app_filter_rule(cJSON *data_obj) {
             }
             
 
-            printk(KERN_CONT "| %-6d | %-5d | ", rule->rule_id, rule->enable);
+            printk(KERN_CONT "| %-6d | %-5d | %-9d | ", rule->rule_id, rule->enable, rule->filter_quic);
             
 
             if (mac_count == 0) {
@@ -561,7 +662,7 @@ int fwx_api_dump_app_filter_rule(cJSON *data_obj) {
                         }
                         printk(KERN_CONT "%pM", mac_node->mac);
                         mac_count++;
-                        if (mac_count >= 3) {  // 最多显示3个MAC
+                        if (mac_count >= 32) {  
                             if (mac_count < total_mac_count) {
                                 printk(KERN_CONT "...");
                             }
@@ -580,7 +681,7 @@ int fwx_api_dump_app_filter_rule(cJSON *data_obj) {
                 int printed_count = 0;
                 int should_break = 0;
                 app_count = 0;
-                for (i = 0; i < 256 && !should_break; i++) {
+                for (i = 0; i < APPID_HASH_SIZE && !should_break; i++) {
                     hlist_for_each_entry(node, &rule->app_id_list.hash_table[i], hlist) {
                         if (printed_count > 0) {
                             printk(KERN_CONT ", ");
@@ -588,7 +689,7 @@ int fwx_api_dump_app_filter_rule(cJSON *data_obj) {
                         printk(KERN_CONT "%d", node->app_id);
                         printed_count++;
                         app_count++;
-                        if (printed_count >= 5) {  // 最多显示5个App ID
+                        if (printed_count >= 128) {  
                             if (app_count < total_app_count) {
                                 printk(KERN_CONT "...");
                             }
@@ -602,7 +703,7 @@ int fwx_api_dump_app_filter_rule(cJSON *data_obj) {
         }
     }
     
-    printk("+--------+-------+------------------+------------------+\n");
+    printk("+--------+-------+-----------+------------------+------------------+\n");
     
 
     printk("\n");
@@ -629,7 +730,7 @@ int fwx_api_dump_app_filter_rule(cJSON *data_obj) {
             hlist_for_each_entry(whitelist_node, &g_app_filter_whitelist.hash_table[i], hlist) {
                 printk(KERN_CONT "| %-38pM |\n", whitelist_node->mac);
                 printed_count++;
-                if (printed_count >= 10) {  // 最多显示10个MAC
+                if (printed_count >= 10) {  
                     if (printed_count < total_whitelist_count) {
                         printk(KERN_CONT "| %-38s |\n", "...");
                     }
