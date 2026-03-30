@@ -50,14 +50,58 @@ DEFAULT_PACKAGES.nas:=\
 # @brief Default packages for @DEVICE_TYPE router.
 ##
 DEFAULT_PACKAGES.router:=\
-	dnsmasq \
+	dnsmasq-full \
 	firewall4 \
 	nftables \
 	kmod-nft-offload \
 	odhcp6c \
 	odhcpd-ipv6only \
 	ppp \
-	ppp-mod-pppoe
+	ppp-mod-pppoe \
+	fwxd \
+	kmod-fwx \
+	libfwx_common \
+	luci \
+	luci-theme-fanchmwrt \
+	luci-app-fwx-appfilter \
+	luci-app-fwx-dashboard \
+	luci-app-fwx-feature \
+	luci-app-fwx-macfilter \
+	luci-app-fwx-network \
+	luci-app-fwx-record \
+	luci-app-fwx-resources \
+	luci-app-fwx-user \
+	luci-app-fwx-dashboard-setting \
+	luci-app-fwx-session-stat \
+	luci-app-fwx-user-record \
+	luci-app-fwx-system \
+	luci-app-ddns \
+	luci-app-upnp \
+	luci-app-autoreboot \
+	luci-app-wol \
+	block-mount \
+	coremark \
+	kmod-tun \
+	kmod-nf-nathelper  \
+	kmod-nf-nathelper-extra  \
+	kmod-ipt-raw \
+	kmod-nf-conntrack-netlink \
+	kmod-inet-diag \
+	kmod-nft-tproxy \
+	kmod-wireguard \
+	kmod-fs-ksmbd \
+	luci-app-uhttpd \
+	kmod-usb-storage \
+	kmod-usb-core \
+	kmod-fs-vfat \
+	kmod-fs-ext4 \
+	px5g-standalone \
+	kmod-nft-socket \
+	kmod-netlink-diag \
+	ipset  \
+	kmod-pppol2tp \
+	kmod-dummy \
+	ip-full
 
 ifneq ($(DUMP),)
   all: dumpinfo

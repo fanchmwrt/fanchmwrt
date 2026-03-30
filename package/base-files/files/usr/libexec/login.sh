@@ -1,5 +1,6 @@
 #!/bin/sh
 
+/usr/bin/fwx_cli.sh
 [ -t 0 ] && {
 	tty_dev=$(readlink /proc/self/fd/0)
 	case "$tty_dev" in
