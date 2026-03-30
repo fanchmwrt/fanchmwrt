@@ -252,6 +252,7 @@ endif
 ifneq ($(CONFIG_USE_APK),)
 	mkdir -p $(1)/etc/apk/repositories.d
 	$(call FeedSourcesAppendAPK,$(1)/etc/apk/repositories.d/distfeeds.list)
+	sed -i '/fanchmwrt/d' $(1)/etc/apk/repositories.d/distfeeds.list
 	$(VERSION_SED_SCRIPT) $(1)/etc/apk/repositories.d/distfeeds.list
 
 	rm -f $(1)/etc/uci-defaults/13_fix-group-user
