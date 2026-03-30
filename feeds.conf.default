@@ -3,3 +3,4 @@ src-git luci https://git.openwrt.org/project/luci.git^067535eaf51a59582b775a8b58
 src-git routing https://git.openwrt.org/feed/routing.git^5b23ea12d417e5dba99788c5b34abdae81cccf33
 src-git telephony https://git.openwrt.org/feed/telephony.git^2618106d5846a4a542fdf5809f0d3ed228ce439b
 src-git video https://github.com/openwrt/video.git^094bf58da6682f895255a35a84349a79dab4bf95
+src-git fanchmwrt https://github.com/fanchmwrt/fanchmwrt-packages.git
