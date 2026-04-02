@@ -1,7 +1,7 @@
 
 
 ## About
-FanchmWrt is an open-source enterprise-grade router system
+FanchmWrt is an open-source enterprise-grade router system.  
 This project is based on OpenWrt and incorporates some firewall features.    
 Several popular device firmwares have been released and are available for download at [www.fanchmwrt.com](https://www.fanchmwrt.com).   
 You can also compile firmwares for other models yourself.
