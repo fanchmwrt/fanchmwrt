@@ -485,7 +485,7 @@ lan_static_ip_handle()
         netmask="255.255.255.0"
     fi
     uci set network.lan.ipaddr=$ipaddr 
-    uci set network.lan.ipaddr=$ipaddr 
+    uci set network.lan.netmask=$netmask
     uci set network.lan.proto=static
     uci commit network
     /etc/init.d/network reload
