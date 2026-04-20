@@ -1273,8 +1273,9 @@ struct json_object *fwx_api_get_all_users(struct json_object *req_obj) {
     }
     
     int flag = 0;
-    int page = 1;
+    int page = 0;
     int page_size = 15;
+    int use_paging = 0;
     
     struct json_object *flag_obj = json_object_object_get(req_obj, "flag");
     struct json_object *page_obj = json_object_object_get(req_obj, "page");
@@ -1285,9 +1286,13 @@ struct json_object *fwx_api_get_all_users(struct json_object *req_obj) {
     }
     if (page_obj) {
         page = json_object_get_int(page_obj);
-        if (page < 1) page = 1;
+        if (page > 0) {
+            use_paging = 1;
+        } else {
+            page = 0;
+        }
     }
-    if (page_size_obj) {
+    if (use_paging && page_size_obj) {
         page_size = json_object_get_int(page_size_obj);
         if (page_size < 1) page_size = 15;
     }
@@ -1302,6 +1307,7 @@ struct json_object *fwx_api_get_all_users(struct json_object *req_obj) {
     extern int g_cur_user_num;
     
     all_users_info_t au_info;
+    memset(&au_info, 0, sizeof(au_info));
     au_info.flag = flag;
     au_info.users_array = json_object_new_array();
     if (!au_info.users_array) {
@@ -1319,10 +1325,15 @@ struct json_object *fwx_api_get_all_users(struct json_object *req_obj) {
     
 
     int total_num = json_object_array_length(au_info.users_array);
-    int total_page = (total_num + page_size - 1) / page_size;
-    if (total_page < 1) total_page = 1;
-    if (page > total_page) page = total_page;
-    
+    int total_page = 1;
+    int resp_page = 0;
+    int resp_page_size = total_num;
+    struct json_object *list_obj = au_info.users_array;
+
+    if (use_paging) {
+        total_page = (total_num + page_size - 1) / page_size;
+        if (total_page < 1) total_page = 1;
+        if (page > total_page) page = total_page;
 
     struct json_object *paged_array = json_object_new_array();
     int start_idx = (page - 1) * page_size;
@@ -1338,14 +1349,18 @@ struct json_object *fwx_api_get_all_users(struct json_object *req_obj) {
         }
     }
     
-    json_object_put(au_info.users_array);
+        json_object_put(au_info.users_array);
+        list_obj = paged_array;
+        resp_page = page;
+        resp_page_size = page_size;
+    }
     
     struct json_object *data_obj = json_object_new_object();
-    json_object_object_add(data_obj, "list", paged_array);
+    json_object_object_add(data_obj, "list", list_obj);
     json_object_object_add(data_obj, "total_num", json_object_new_int(total_num));
     json_object_object_add(data_obj, "total_page", json_object_new_int(total_page));
-    json_object_object_add(data_obj, "page", json_object_new_int(page));
-    json_object_object_add(data_obj, "page_size", json_object_new_int(page_size));
+    json_object_object_add(data_obj, "page", json_object_new_int(resp_page));
+    json_object_object_add(data_obj, "page_size", json_object_new_int(resp_page_size));
     
     uci_free_context(uci_ctx);
     
