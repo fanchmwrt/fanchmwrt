@@ -1,0 +1,15 @@
+#!/bin/sh
+
+set_opt() {
+	local key=$1
+	local val=$2
+	uci set "luci.$key=$val"
+}
+
+set_opt themes.FanchmWrt /luci-static/fanchmwrt
+
+set_opt main.mediaurlbase /luci-static/fanchmwrt
+
+uci commit luci
+
+exit 0
