@@ -4216,6 +4216,81 @@ static int get_os_release_field(const char *field_name, char *value, size_t len)
     return 0;
 }
 
+static int get_fwx_release_field(const char *field_name, char *value, size_t len) {
+    FILE *fp = fopen("/etc/fwx_release", "r");
+    if (!fp) {
+        return -1;
+    }
+
+    char line[256] = {0};
+    size_t field_len = strlen(field_name);
+    int found = 0;
+
+    while (fgets(line, sizeof(line), fp)) {
+        char *line_ptr = line;
+        while (*line_ptr == ' ' || *line_ptr == '\t') {
+            line_ptr++;
+        }
+        if (*line_ptr == '#' || *line_ptr == '\0' || *line_ptr == '\n' || *line_ptr == '\r') {
+            continue;
+        }
+
+        if (strncmp(line_ptr, field_name, field_len) == 0 && line_ptr[field_len] == '=') {
+            char *value_start = line_ptr + field_len + 1;
+            while (*value_start == ' ' || *value_start == '\t') {
+                value_start++;
+            }
+
+            char *value_end = value_start;
+            while (*value_end != '\0' && *value_end != '\n' && *value_end != '\r') {
+                value_end++;
+            }
+
+            size_t value_size = value_end - value_start;
+            if (value_size > 0 && value_size < len) {
+                strncpy(value, value_start, value_size);
+                value[value_size] = '\0';
+                str_trim(value);
+                value_size = strlen(value);
+                if (value_size >= 2) {
+                    if ((value[0] == '\'' && value[value_size - 1] == '\'') ||
+                        (value[0] == '"' && value[value_size - 1] == '"')) {
+                        memmove(value, value + 1, value_size - 2);
+                        value[value_size - 2] = '\0';
+                    }
+                }
+                found = 1;
+                break;
+            }
+        }
+    }
+
+    fclose(fp);
+
+    if (!found) {
+        return -1;
+    }
+    return 0;
+}
+
+static int get_dashboard_init_status(void) {
+    char init_status_buf[16] = {0};
+    int init_status = 1;
+
+    if (read_file_buf("/etc/fwx_init_status", init_status_buf, sizeof(init_status_buf)) > 0) {
+        if (strcmp(init_status_buf, "0") == 0) {
+            int fd = open("/etc/fwx_init_status", O_WRONLY | O_TRUNC | O_CREAT, 0644);
+            init_status = 0;
+            if (fd >= 0) {
+                write(fd, "1\n", 2);
+                close(fd);
+            }
+        }
+    }
+
+    return init_status;
+}
+
 
 static struct json_object *get_dashboard_system_status(void) {
     struct json_object *system_status = json_object_new_object();
@@ -4275,14 +4350,27 @@ static struct json_object *get_dashboard_system_status(void) {
         }
     }
 
+    char release_type_buf[16] = {0};
+    if (get_fwx_release_field("RELEASE_TYPE", release_type_buf, sizeof(release_type_buf)) == 0) {
+        json_object_object_add(system_status, "release_type", json_object_new_int(atoi(release_type_buf)));
+    } else {
+        json_object_object_add(system_status, "release_type", json_object_new_int(0));
+    }
+
+    char snapshot_buf[16] = {0};
+    if (get_fwx_release_field("SNAPSHOT", snapshot_buf, sizeof(snapshot_buf)) == 0) {
+        json_object_object_add(system_status, "snapshot", json_object_new_int(atoi(snapshot_buf)));
+    } else {
+        json_object_object_add(system_status, "snapshot", json_object_new_int(0));
+    }
+
     char release_date[32] = {0};
-    if (read_file_buf("/etc/release_date", release_date, sizeof(release_date)) > 0) {
+    if (get_fwx_release_field("RELEASE_DATE", release_date, sizeof(release_date)) == 0) {
         str_trim(release_date);
         json_object_object_add(system_status, "release_date", json_object_new_string(release_date));
     } else {
         json_object_object_add(system_status, "release_date", json_object_new_string(""));
     }
-    
 
     memset(buf, 0, sizeof(buf));
     if (exec_with_result_line("uname -r", buf, sizeof(buf)) == 0 && strlen(buf) > 0) {
@@ -6788,6 +6876,12 @@ struct json_object *fwx_api_get_dashboard_param(struct json_object *req_obj) {
     return fwx_gen_api_response_data(API_CODE_SUCCESS, data_obj);
 }
 
+struct json_object *fwx_api_get_init_status(struct json_object *req_obj) {
+    struct json_object *data_obj = json_object_new_object();
+    json_object_object_add(data_obj, "init_status", json_object_new_int(get_dashboard_init_status()));
+    return fwx_gen_api_response_data(API_CODE_SUCCESS, data_obj);
+}
+
 struct json_object *fwx_api_set_dashboard_param(struct json_object *req_obj) {
     
     if (!req_obj) {
@@ -6887,6 +6981,7 @@ struct json_object *fwx_api_visit_list(struct json_object *req_obj);
 struct json_object *fwx_api_add_mock_visit_records(struct json_object *req_obj);
 struct json_object *fwx_api_get_device_list(struct json_object *req_obj);
 struct json_object *fwx_api_get_dashboard_param(struct json_object *req_obj);
+struct json_object *fwx_api_get_init_status(struct json_object *req_obj);
 struct json_object *fwx_api_set_dashboard_param(struct json_object *req_obj);
 struct json_object *fwx_api_get_system_base_info(struct json_object *req_obj);
 
@@ -6967,6 +7062,7 @@ static fwx_api_node_t fwx_api_node_list[] = {
     {"visit_list", fwx_api_visit_list, 0, FWX_API_METHOD_GET},
     {"get_device_list", fwx_api_get_device_list, 0, FWX_API_METHOD_GET},
     {"get_dashboard_param", fwx_api_get_dashboard_param, 0, FWX_API_METHOD_GET},
+    {"get_init_status", fwx_api_get_init_status, 0, FWX_API_METHOD_GET},
     {"set_dashboard_param", fwx_api_set_dashboard_param, 1, FWX_API_METHOD_POST},
 
     {NULL, NULL, 0, FWX_API_METHOD_GET}

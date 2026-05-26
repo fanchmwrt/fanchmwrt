@@ -64,6 +64,8 @@ define Package/fwxd/install
 	$(INSTALL_DATA) ./files/fwx_record.config $(1)/etc/config/fwx_record
 	$(INSTALL_DATA) ./files/mac_blacklist.config $(1)/etc/config/mac_blacklist
 	$(INSTALL_DATA) ./files/fwx.version $(1)/etc/fwx_version
+	$(INSTALL_DATA) ./files/fwx_release $(1)/etc/fwx_release
+	$(INSTALL_DATA) ./files/fwx_init_status $(1)/etc/fwx_init_status
 
 endef
 
