@@ -93,9 +93,19 @@ tmp/.prereq_packages: .config
 	fi
 	touch $@
 endif
-
+fwx_init:
+	@FEATURE_FILE="$(TOPDIR)/package/base-files/files/etc/product_feature"; \
+	BOARD="$(CONFIG_TARGET_BOARD)"; ARCH="$(CONFIG_ARCH)"; \
+	if [ "$$BOARD" = "x86" ] || [ "$$ARCH" = "x86_64" ] || [ "$$ARCH" = "i386" ] || [ "$${BOARD#rockchip}" != "$$BOARD" ]; then \
+		[ -f "$$FEATURE_FILE" ] && sed -i '/^EXPAND_ROOT=/d' "$$FEATURE_FILE"; \
+		ROOTFS_SIZE="$(CONFIG_TARGET_ROOTFS_PARTSIZE)"; \
+		case "$$ROOTFS_SIZE" in ''|*[!0-9]*) ROOTFS_SIZE=0 ;; esac; \
+		[ "$$ROOTFS_SIZE" -gt 300 ] && EXPAND_ROOT=1 || EXPAND_ROOT=0; \
+		echo "EXPAND_ROOT=$$EXPAND_ROOT" >> "$$FEATURE_FILE"; \
+	fi
+		
 # check prerequisites before starting to build
-prereq: $(target/stamp-prereq) tmp/.prereq_packages
+prereq: fwx_init $(target/stamp-prereq) tmp/.prereq_packages
 	@if [ ! -f "$(INCLUDE_DIR)/site/$(ARCH)" ]; then \
 		echo 'ERROR: Missing site config for architecture "$(ARCH)" !'; \
 		echo '       The missing file will cause configure scripts to fail during compilation.'; \
