@@ -4273,6 +4273,63 @@ static int get_fwx_release_field(const char *field_name, char *value, size_t len
     return 0;
 }
 
+static int get_product_feature_field(const char *field_name, char *value, size_t len) {
+    FILE *fp = fopen("/etc/product_feature", "r");
+    if (!fp) {
+        return -1;
+    }
+
+    char line[256] = {0};
+    size_t field_len = strlen(field_name);
+    int found = 0;
+
+    while (fgets(line, sizeof(line), fp)) {
+        char *line_ptr = line;
+        while (*line_ptr == ' ' || *line_ptr == '\t') {
+            line_ptr++;
+        }
+        if (*line_ptr == '#' || *line_ptr == '\0' || *line_ptr == '\n' || *line_ptr == '\r') {
+            continue;
+        }
+
+        if (strncmp(line_ptr, field_name, field_len) == 0 && line_ptr[field_len] == '=') {
+            char *value_start = line_ptr + field_len + 1;
+            while (*value_start == ' ' || *value_start == '\t') {
+                value_start++;
+            }
+
+            char *value_end = value_start;
+            while (*value_end != '\0' && *value_end != '\n' && *value_end != '\r') {
+                value_end++;
+            }
+
+            size_t value_size = value_end - value_start;
+            if (value_size > 0 && value_size < len) {
+                strncpy(value, value_start, value_size);
+                value[value_size] = '\0';
+                str_trim(value);
+                value_size = strlen(value);
+                if (value_size >= 2) {
+                    if ((value[0] == '\'' && value[value_size - 1] == '\'') ||
+                        (value[0] == '"' && value[value_size - 1] == '"')) {
+                        memmove(value, value + 1, value_size - 2);
+                        value[value_size - 2] = '\0';
+                    }
+                }
+                found = 1;
+                break;
+            }
+        }
+    }
+
+    fclose(fp);
+
+    if (!found) {
+        return -1;
+    }
+    return 0;
+}
+
 static int get_dashboard_init_status(void) {
     char init_status_buf[16] = {0};
     int init_status = 1;
@@ -4370,6 +4427,13 @@ static struct json_object *get_dashboard_system_status(void) {
         json_object_object_add(system_status, "release_date", json_object_new_string(release_date));
     } else {
         json_object_object_add(system_status, "release_date", json_object_new_string(""));
+    }
+
+    char expand_root_buf[16] = {0};
+    if (get_product_feature_field("EXPAND_ROOT", expand_root_buf, sizeof(expand_root_buf)) == 0) {
+        json_object_object_add(system_status, "expand_root", json_object_new_int(atoi(expand_root_buf)));
+    } else {
+        json_object_object_add(system_status, "expand_root", json_object_new_int(0));
     }
 
     memset(buf, 0, sizeof(buf));
