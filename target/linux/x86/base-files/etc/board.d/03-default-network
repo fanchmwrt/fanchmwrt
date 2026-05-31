@@ -1,0 +1,53 @@
+#
+# Copyright (C) 2013-2015 OpenWrt.org
+#
+
+. /lib/functions/uci-defaults.sh
+
+board_config_update
+json_is_a network object && exit 0
+eth_ifaces="$(
+        for path in /sys/class/net/eth*; do
+                [ -e "$path" ] || continue
+                dev="${path##*/}"
+                num="${dev#eth}"
+                case "$num" in
+                        ''|*[!0-9]*)
+                                continue
+                                ;;
+                esac
+                printf '%s %s\n' "$num" "$dev"
+        done | sort -n | cut -d' ' -f2
+)"
+eth_count=0
+for dev in $eth_ifaces; do
+        eth_count=$((eth_count + 1))
+done
+case "$eth_count" in
+        0)
+                ucidef_set_interface_lan "eth0"
+                ;;
+        1)
+                ucidef_set_interface_lan "$eth_ifaces"
+                ;;
+        *)
+                lan_if=""
+                wan_if=""
+                idx=0
+
+                for dev in $eth_ifaces; do
+                        idx=$((idx + 1))
+                        if [ "$idx" -eq "$eth_count" ]; then
+                                wan_if="$dev"
+                        else
+                                lan_if="${lan_if:+$lan_if }$dev"
+                        fi
+                done
+                ucidef_set_interface_lan "$lan_if"
+                ucidef_set_interface_wan "$wan_if"
+                ;;
+esac
+
+board_config_flush
+
+exit 0
