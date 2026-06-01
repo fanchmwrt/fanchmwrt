@@ -4335,17 +4335,37 @@ static int get_dashboard_init_status(void) {
     int init_status = 1;
 
     if (read_file_buf("/etc/fwx_init_status", init_status_buf, sizeof(init_status_buf)) > 0) {
-        if (strcmp(init_status_buf, "0") == 0) {
-            int fd = open("/etc/fwx_init_status", O_WRONLY | O_TRUNC | O_CREAT, 0644);
+        str_trim(init_status_buf);
+        if (atoi(init_status_buf) == 0) {
             init_status = 0;
-            if (fd >= 0) {
-                write(fd, "1\n", 2);
-                close(fd);
-            }
         }
     }
 
     return init_status;
+}
+
+static int set_dashboard_init_status(int init_status) {
+    int fd = -1;
+    char status_buf[8] = {0};
+    int len = 0;
+
+    if (init_status != 0 && init_status != 1) {
+        return -1;
+    }
+
+    fd = open("/etc/fwx_init_status", O_WRONLY | O_TRUNC | O_CREAT, 0644);
+    if (fd < 0) {
+        return -1;
+    }
+
+    len = snprintf(status_buf, sizeof(status_buf), "%d\n", init_status);
+    if (len <= 0 || write(fd, status_buf, len) != len) {
+        close(fd);
+        return -1;
+    }
+
+    close(fd);
+    return 0;
 }
 
 
@@ -6961,7 +6981,31 @@ struct json_object *fwx_api_get_dashboard_param(struct json_object *req_obj) {
 
 struct json_object *fwx_api_get_init_status(struct json_object *req_obj) {
     struct json_object *data_obj = json_object_new_object();
+    (void)req_obj;
     json_object_object_add(data_obj, "init_status", json_object_new_int(get_dashboard_init_status()));
+    return fwx_gen_api_response_data(API_CODE_SUCCESS, data_obj);
+}
+
+struct json_object *fwx_api_set_init_status(struct json_object *req_obj) {
+    struct json_object *data_obj = json_object_new_object();
+    int init_status = 1;
+
+    if (req_obj) {
+        struct json_object *init_status_obj = json_object_object_get(req_obj, "init_status");
+        if (init_status_obj) {
+            init_status = json_object_get_int(init_status_obj);
+        }
+    }
+
+    if (init_status != 0 && init_status != 1) {
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+    }
+
+    if (set_dashboard_init_status(init_status) != 0) {
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+    }
+
+    json_object_object_add(data_obj, "init_status", json_object_new_int(init_status));
     return fwx_gen_api_response_data(API_CODE_SUCCESS, data_obj);
 }
 
@@ -7065,6 +7109,7 @@ struct json_object *fwx_api_add_mock_visit_records(struct json_object *req_obj);
 struct json_object *fwx_api_get_device_list(struct json_object *req_obj);
 struct json_object *fwx_api_get_dashboard_param(struct json_object *req_obj);
 struct json_object *fwx_api_get_init_status(struct json_object *req_obj);
+struct json_object *fwx_api_set_init_status(struct json_object *req_obj);
 struct json_object *fwx_api_set_dashboard_param(struct json_object *req_obj);
 struct json_object *fwx_api_get_system_base_info(struct json_object *req_obj);
 
@@ -7146,6 +7191,7 @@ static fwx_api_node_t fwx_api_node_list[] = {
     {"get_device_list", fwx_api_get_device_list, 0, FWX_API_METHOD_GET},
     {"get_dashboard_param", fwx_api_get_dashboard_param, 0, FWX_API_METHOD_GET},
     {"get_init_status", fwx_api_get_init_status, 0, FWX_API_METHOD_GET},
+    {"set_init_status", fwx_api_set_init_status, 0, FWX_API_METHOD_POST},
     {"set_dashboard_param", fwx_api_set_dashboard_param, 1, FWX_API_METHOD_POST},
 
     {NULL, NULL, 0, FWX_API_METHOD_GET}
