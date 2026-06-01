@@ -2149,6 +2149,14 @@ void af_clear_active_app_list(void)
 }
 
 
+static int af_is_invalid_active_host(const char *host)
+{
+    if (!host)
+        return 1;
+
+    return strchr(host, '.') ? 0 : 1; 
+}
+
 void af_update_active_host_list(af_client_info_t *client, flow_info_t *flow)
 {
 	active_host_node_t *node = NULL, *tmp_node = NULL;
@@ -2178,6 +2186,10 @@ void af_update_active_host_list(af_client_info_t *client, flow_info_t *flow)
 		return;  
 	}
 	
+
+    if (af_is_invalid_active_host(host_buf))
+        return;
+
 	spin_lock_bh(&active_host_list_lock);
 	
 	

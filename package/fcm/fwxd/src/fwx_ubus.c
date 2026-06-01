@@ -4834,6 +4834,25 @@ static int compare_host_timestamp(const void *a, const void *b) {
     return ts_val_b - ts_val_a;  // 降序排序
 }
 
+static int is_invalid_active_host_value(const char *host) {
+    if (!host || host[0] == '\0') {
+        return 1;
+    }
+    if (strcmp(host, "-") == 0) {
+        return 1;
+    }
+    if (strcasecmp(host, "undefined") == 0 ||
+        strncasecmp(host, "undefined.", 10) == 0 ||
+        strncasecmp(host, "undefined:", 10) == 0) {
+        return 1;
+    }
+    if (strcasecmp(host, "null") == 0 ||
+        strcasecmp(host, "(null)") == 0) {
+        return 1;
+    }
+    return 0;
+}
+
 
 static struct json_object *get_dashboard_active_host(void) {
     struct json_object *active_host = json_object_new_object();
@@ -4898,7 +4917,7 @@ static struct json_object *get_dashboard_active_host(void) {
         str_trim(host_buf);
         
 
-        if (host_buf[0] == '\0' || strcmp(host_buf, "-") == 0) {
+        if (is_invalid_active_host_value(host_buf)) {
             continue;
         }
         
