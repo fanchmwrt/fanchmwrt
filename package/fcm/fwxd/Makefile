@@ -12,7 +12,7 @@ TARGET_CFLAGS +=-Werror=implicit-function-declaration
 define Package/fwxd
   SECTION:=Base system
   CATEGORY:=Base system
-  DEPENDS:=+libubox +libubus  +libuci +libpthread +libjson-c +libblobmsg-json +libuci-lua +libfwx_common +libsqlite3 +libmosquitto +libcurl +mosquitto-ssl 
+  DEPENDS:=+libubox +libubus  +libuci +libpthread +libjson-c +libblobmsg-json +libuci-lua +libfwx_common +libsqlite3 +libmosquitto +libcurl 
   TITLE:=Fanchm fwx application
 endef
 
