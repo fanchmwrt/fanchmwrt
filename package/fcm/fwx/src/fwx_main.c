@@ -69,6 +69,58 @@ u_int32_t fwx_log_level = 3;
 #define GET_APPID(ct) ((ct)->fwx_data.app_id)
 #define MAX_OAF_NETLINK_MSG_LEN 1024
 #define MAX_AF_SUPPORT_DATA_LEN 3000
+#define AF_AC_CHARSET_SIZE 256
+
+
+int af_match_port(port_info_t *info, int port);
+int af_match_one(flow_info_t *flow, af_feature_node_t *node);
+
+typedef struct af_ac_output_item {
+	struct list_head list;
+	af_feature_node_t *feature;
+} af_ac_output_item_t;
+
+typedef struct af_ac_node af_ac_node_t;
+
+typedef struct af_ac_edge {
+	struct hlist_node hnode;
+	u8 ch;
+	af_ac_node_t *next;
+} af_ac_edge_t;
+
+struct af_ac_node {
+	struct hlist_head edges;
+	struct list_head output_list;
+	struct list_head all_list;
+	af_ac_node_t *fail;
+};
+
+typedef struct af_url_ac {
+	af_ac_node_t *root;
+	struct list_head node_list;
+	u32 node_count;
+	u32 edge_count;
+	u32 output_count;
+	int ready;
+} af_url_ac_t;
+
+typedef struct af_ac_match_stat {
+	u32 ac_state_steps;
+	u32 ac_fail_jumps;
+	u32 ac_candidate_checks;
+	u32 ac_match_count;
+	u32 fallback_checks;
+} af_ac_match_stat_t;
+
+static af_url_ac_t g_url_ac = {
+	.root = NULL,
+	.node_list = LIST_HEAD_INIT(g_url_ac.node_list),
+	.node_count = 0,
+	.edge_count = 0,
+	.output_count = 0,
+	.ready = 0,
+};
+static int g_url_ac_dirty = 1;
 
 #if LINUX_VERSION_CODE > KERNEL_VERSION(5,10,197)
 extern void nf_send_reset(struct net *net, struct sock *sk, struct sk_buff *oldskb, int hook);
@@ -82,6 +134,364 @@ char *ipv6_to_str(const struct in6_addr *addr, char *str)
 {
 	sprintf(str, "%pI6c", addr);
 	return str;
+}
+
+static int af_get_flow_host(flow_info_t *flow, char *host_buf, int host_buf_len, int *host_len)
+{
+	int copy_len = 0;
+
+	if (!flow || !host_buf || host_buf_len <= 1 || !host_len) {
+		return -1;
+	}
+
+	if (flow->https.match == AF_TRUE && flow->https.url_pos && flow->https.url_len > 0) {
+		copy_len = flow->https.url_len >= (host_buf_len - 1) ? (host_buf_len - 1) : flow->https.url_len;
+		strncpy(host_buf, flow->https.url_pos, copy_len);
+	} else if (flow->http.match == AF_TRUE && flow->http.host_pos && flow->http.host_len > 0) {
+		copy_len = flow->http.host_len >= (host_buf_len - 1) ? (host_buf_len - 1) : flow->http.host_len;
+		strncpy(host_buf, flow->http.host_pos, copy_len);
+	} else {
+		return -1;
+	}
+
+	host_buf[copy_len] = '\0';
+	*host_len = copy_len;
+	return 0;
+}
+
+static int af_match_basic_cond(flow_info_t *flow, af_feature_node_t *node)
+{
+	if (!flow || !node) {
+		return AF_FALSE;
+	}
+	if (node->proto > 0 && flow->l4_protocol != node->proto) {
+		return AF_FALSE;
+	}
+	if (flow->l4_len == 0) {
+		return AF_FALSE;
+	}
+	if (node->sport != 0 && flow->sport != node->sport) {
+		return AF_FALSE;
+	}
+	if (!af_match_port(&node->dport_info, flow->dport)) {
+		return AF_FALSE;
+	}
+	return AF_TRUE;
+}
+
+static int af_is_regex_host_pattern(const char *host_url)
+{
+	if (!host_url || host_url[0] == '\0') {
+		return 0;
+	}
+
+	/* 正则判定标准：^开头，且同时包含*和$ */
+	if (host_url[0] != '^') {
+		return 0;
+	}
+	if (!strchr(host_url, '*')) {
+		return 0;
+	}
+	if (!strchr(host_url, '$')) {
+		return 0;
+	}
+	printk("host %s is regex\n", host_url);
+	return 1;
+}
+
+static af_ac_node_t *af_ac_alloc_node(void)
+{
+	af_ac_node_t *node = kzalloc(sizeof(*node), GFP_ATOMIC);
+	if (!node) {
+		return NULL;
+	}
+	INIT_HLIST_HEAD(&node->edges);
+	INIT_LIST_HEAD(&node->output_list);
+	INIT_LIST_HEAD(&node->all_list);
+	node->fail = NULL;
+	list_add_tail(&node->all_list, &g_url_ac.node_list);
+	g_url_ac.node_count++;
+	return node;
+}
+
+static af_ac_node_t *af_ac_find_next(af_ac_node_t *node, u8 ch)
+{
+	af_ac_edge_t *edge = NULL;
+	if (!node) {
+		return NULL;
+	}
+	hlist_for_each_entry(edge, &node->edges, hnode) {
+		if (edge->ch == ch) {
+			return edge->next;
+		}
+	}
+	return NULL;
+}
+
+static af_ac_node_t *af_ac_get_or_create_next(af_ac_node_t *node, u8 ch)
+{
+	af_ac_edge_t *edge = NULL;
+	af_ac_node_t *child = af_ac_find_next(node, ch);
+	if (child) {
+		return child;
+	}
+
+	child = af_ac_alloc_node();
+	if (!child) {
+		return NULL;
+	}
+	edge = kzalloc(sizeof(*edge), GFP_ATOMIC);
+	if (!edge) {
+		list_del(&child->all_list);
+		kfree(child);
+		g_url_ac.node_count--;
+		return NULL;
+	}
+	edge->ch = ch;
+	edge->next = child;
+	hlist_add_head(&edge->hnode, &node->edges);
+	g_url_ac.edge_count++;
+	return child;
+}
+
+static int af_ac_add_output(af_ac_node_t *node, af_feature_node_t *feature)
+{
+	af_ac_output_item_t *item = NULL;
+	if (!node || !feature) {
+		return -1;
+	}
+
+	item = kzalloc(sizeof(*item), GFP_ATOMIC);
+	if (!item) {
+		return -1;
+	}
+	item->feature = feature;
+	INIT_LIST_HEAD(&item->list);
+	list_add_tail(&item->list, &node->output_list);
+	g_url_ac.output_count++;
+	return 0;
+}
+
+static void af_ac_reset_locked(void)
+{
+	af_ac_node_t *node = NULL;
+	af_ac_node_t *tmp_node = NULL;
+
+	list_for_each_entry_safe(node, tmp_node, &g_url_ac.node_list, all_list) {
+		af_ac_edge_t *edge = NULL;
+		struct hlist_node *edge_tmp = NULL;
+		af_ac_output_item_t *item = NULL;
+		af_ac_output_item_t *tmp_item = NULL;
+
+		hlist_for_each_entry_safe(edge, edge_tmp, &node->edges, hnode) {
+			hlist_del(&edge->hnode);
+			kfree(edge);
+		}
+		list_for_each_entry_safe(item, tmp_item, &node->output_list, list) {
+			list_del(&item->list);
+			kfree(item);
+		}
+		list_del(&node->all_list);
+		kfree(node);
+	}
+
+	g_url_ac.root = NULL;
+	g_url_ac.node_count = 0;
+	g_url_ac.edge_count = 0;
+	g_url_ac.output_count = 0;
+	g_url_ac.ready = 0;
+}
+
+static int af_ac_insert_pattern(af_feature_node_t *feature)
+{
+	int i = 0;
+	int len = 0;
+	af_ac_node_t *cur = g_url_ac.root;
+
+	if (!feature || !cur) {
+		return -1;
+	}
+	len = strlen(feature->host_url);
+	if (len <= 0) {
+		return 0;
+	}
+
+	for (i = 0; i < len; i++) {
+		cur = af_ac_get_or_create_next(cur, (u8)feature->host_url[i]);
+		if (!cur) {
+			return -1;
+		}
+	}
+
+	return af_ac_add_output(cur, feature);
+}
+
+static int af_ac_build_fail_links_locked(void)
+{
+	u32 head = 0;
+	u32 tail = 0;
+	af_ac_node_t **queue = NULL;
+	af_ac_edge_t *edge = NULL;
+
+	if (!g_url_ac.root || g_url_ac.node_count == 0) {
+		return 0;
+	}
+
+	queue = kzalloc(sizeof(*queue) * g_url_ac.node_count, GFP_ATOMIC);
+	if (!queue) {
+		return -1;
+	}
+
+	g_url_ac.root->fail = g_url_ac.root;
+	hlist_for_each_entry(edge, &g_url_ac.root->edges, hnode) {
+		edge->next->fail = g_url_ac.root;
+		queue[tail++] = edge->next;
+	}
+
+	while (head < tail) {
+		af_ac_node_t *cur = queue[head++];
+		hlist_for_each_entry(edge, &cur->edges, hnode) {
+			af_ac_node_t *fail = cur->fail;
+			af_ac_node_t *fallback = NULL;
+
+			while (fail != g_url_ac.root) {
+				fallback = af_ac_find_next(fail, edge->ch);
+				if (fallback) {
+					break;
+				}
+				fail = fail->fail;
+			}
+			if (!fallback) {
+				fallback = af_ac_find_next(g_url_ac.root, edge->ch);
+			}
+			edge->next->fail = fallback ? fallback : g_url_ac.root;
+			queue[tail++] = edge->next;
+		}
+	}
+
+	kfree(queue);
+	return 0;
+}
+
+static int af_rebuild_url_ac_locked(void)
+{
+	af_feature_node_t *node = NULL;
+
+	af_ac_reset_locked();
+	INIT_LIST_HEAD(&g_url_ac.node_list);
+	g_url_ac.root = af_ac_alloc_node();
+	if (!g_url_ac.root) {
+		g_url_ac.ready = 0;
+		g_url_ac_dirty = 1;
+		return -1;
+	}
+
+	list_for_each_entry(node, &af_feature_head, head) {
+		if (strlen(node->host_url) == 0) {
+			continue;
+		}
+		if (af_is_regex_host_pattern(node->host_url)) {
+			continue;
+		}
+		if (af_ac_insert_pattern(node) < 0) {
+			AF_ERROR("insert ac pattern failed, host_url=%s\n", node->host_url);
+		}
+	}
+
+	if (af_ac_build_fail_links_locked() < 0) {
+		AF_ERROR("build ac fail links failed\n");
+		g_url_ac.ready = 0;
+		g_url_ac_dirty = 1;
+		return -1;
+	}
+
+	g_url_ac.ready = 1;
+	g_url_ac_dirty = 0;
+	AF_INFO("ac rebuild done, nodes=%u, edges=%u, outputs=%u\n",
+		g_url_ac.node_count, g_url_ac.edge_count, g_url_ac.output_count);
+	return 0;
+}
+
+static int af_rebuild_url_ac(void)
+{
+	int ret = 0;
+	feature_list_write_lock();
+	ret = af_rebuild_url_ac_locked();
+	feature_list_write_unlock();
+	return ret;
+}
+
+static af_feature_node_t *af_match_url_feature_ac(flow_info_t *flow, af_ac_match_stat_t *stat)
+{
+	char host_buf[MAX_URL_MATCH_LEN] = {0};
+	int host_len = 0;
+	int i = 0;
+	af_ac_node_t *state = NULL;
+
+	if (!flow || !stat || !g_url_ac.ready || !g_url_ac.root) {
+		return NULL;
+	}
+	if (af_get_flow_host(flow, host_buf, sizeof(host_buf), &host_len) < 0 || host_len <= 0) {
+		return NULL;
+	}
+
+	state = g_url_ac.root;
+	for (i = 0; i < host_len; i++) {
+		u8 ch = (u8)host_buf[i];
+		af_ac_node_t *next = af_ac_find_next(state, ch);
+		af_ac_node_t *iter = NULL;
+
+		stat->ac_state_steps++;
+		while (!next && state != g_url_ac.root) {
+			state = state->fail;
+			stat->ac_fail_jumps++;
+			next = af_ac_find_next(state, ch);
+		}
+		state = next ? next : g_url_ac.root;
+
+		iter = state;
+		while (iter && iter != g_url_ac.root) {
+			af_ac_output_item_t *item = NULL;
+			list_for_each_entry(item, &iter->output_list, list) {
+				af_feature_node_t *feature = item->feature;
+				stat->ac_candidate_checks++;
+				if (!feature) {
+					continue;
+				}
+				if (!af_match_basic_cond(flow, feature)) {
+					continue;
+				}
+				stat->ac_match_count++;
+				return feature;
+			}
+			iter = iter->fail;
+		}
+	}
+	return NULL;
+}
+
+static af_feature_node_t *af_match_non_url_feature(flow_info_t *flow, af_ac_match_stat_t *stat)
+{
+	af_feature_node_t *n = NULL;
+	af_feature_node_t *node = NULL;
+
+	if (list_empty(&af_feature_head)) {
+		return NULL;
+	}
+	list_for_each_entry_safe(node, n, &af_feature_head, head) {
+		if (strlen(node->host_url) > 0 &&
+			!af_is_regex_host_pattern(node->host_url) &&
+			strlen(node->request_url) == 0) {
+			continue;
+		}
+		if (stat) {
+			stat->fallback_checks++;
+		}
+		if (af_match_one(flow, node)) {
+			return node;
+		}
+	}
+	return NULL;
 }
 
 
@@ -149,6 +559,9 @@ int __add_app_feature(char *feature, int appid, char *name, int proto, int src_p
 	
 		feature_list_write_lock();
 		list_add(&(node->head), &af_feature_head);
+		if (strlen(node->host_url) > 0 && !af_is_regex_host_pattern(node->host_url)) {
+			g_url_ac_dirty = 1;
+		}
 		feature_list_write_unlock();
 	}
 	return 0;
@@ -446,7 +859,7 @@ void af_init_feature(char *feature_str)
 			add_app_feature(app_id, app_name, feature);
 		}
 	}
-	g_feature_count++;  // 增加特征码计数
+	g_feature_count++;  
 
 	if (feature_buf)
 		kfree(feature_buf);
@@ -499,49 +912,6 @@ void load_feature_buf_from_file(char **config_buf)
 	filp_close(fp, NULL);
 }
 
-int load_feature_config(void)
-{
-	char *feature_buf = NULL;
-	char *p;
-	char *begin;
-	char line[MAX_FEATURE_LINE_LEN] = {0};
-
-	load_feature_buf_from_file(&feature_buf);
-	if (!feature_buf)
-	{
-		return -1;
-	}
-	p = begin = feature_buf;
-	while (*p++)
-	{
-		if (*p == '\n')
-		{
-			if (p - begin < MIN_FEATURE_LINE_LEN || p - begin > MAX_FEATURE_LINE_LEN)
-			{
-				begin = p + 1;
-				continue;
-			}
-			memset(line, 0x0, sizeof(line));
-			strncpy(line, begin, p - begin);
-			af_init_feature(line);
-			begin = p + 1;
-		}
-	}
-
-	if (p != begin)
-	{
-		if (p - begin < MIN_FEATURE_LINE_LEN || p - begin > MAX_FEATURE_LINE_LEN)
-			return 0;
-		memset(line, 0x0, sizeof(line));
-		strncpy(line, begin, p - begin);
-		af_init_feature(line);
-		begin = p + 1;
-	}
-	if (feature_buf)
-		kfree(feature_buf);
-	return 0;
-}
-
 static void af_clean_feature_list(void)
 {
 	af_feature_node_t *node;
@@ -552,6 +922,9 @@ static void af_clean_feature_list(void)
 		list_del(&(node->head));
 		kfree(node);
 	}
+	af_ac_reset_locked();
+	INIT_LIST_HEAD(&g_url_ac.node_list);
+	g_url_ac_dirty = 1;
 	g_feature_count = 0;  // 清零特征码计数
 	feature_list_write_unlock();
 }
@@ -566,6 +939,13 @@ void af_add_feature_msg_handle(char *data, int len)
 	strncpy(feature, data, len);
 	AF_INFO("add feature %s\n", feature);
 	af_init_feature(feature);
+}
+
+void af_feature_load_done_msg_handle(void)
+{
+	if (g_url_ac_dirty) {
+		af_rebuild_url_ac();
+	}
 }
 
 static unsigned char *read_skb(struct sk_buff *skb, unsigned int from, unsigned int len)
@@ -979,18 +1359,7 @@ int af_match_one(flow_info_t *flow, af_feature_node_t *node)
 		AF_ERROR("node or flow is NULL\n");
 		return AF_FALSE;
 	}
-	if (node->proto > 0 && flow->l4_protocol != node->proto)
-		return AF_FALSE;
-	if (flow->l4_len == 0)
-		return AF_FALSE;
-
-	if (node->sport != 0 && flow->sport != node->sport)
-	{
-		return AF_FALSE;
-	}
-
-	if (!af_match_port(&node->dport_info, flow->dport))
-	{
+	if (!af_match_basic_cond(flow, node)) {
 		return AF_FALSE;
 	}
 
@@ -1052,24 +1421,36 @@ int is_quic_flow(flow_info_t *flow)
 	return AF_FALSE;
 }
 
+
 int fwx_match_feature(flow_info_t *flow)
 {
-	af_feature_node_t *n, *node;
+	af_feature_node_t *node = NULL;
+	af_ac_match_stat_t stat;
+	char host_buf[MAX_URL_MATCH_LEN] = {0};
+	int host_len = 0;
+
+	memset(&stat, 0x0, sizeof(stat));
 	feature_list_read_lock();
-	if (!list_empty(&af_feature_head))
-	{
-		list_for_each_entry_safe(node, n, &af_feature_head, head)
-		{
-			if (af_match_one(flow, node))
-			{
-				AF_LMT_INFO("match feature, appid=%d, feature = %s\n", node->app_id, node->feature);
-				flow->app_id = node->app_id;
-				flow->feature = node;
-				strncpy(flow->app_name, node->app_name, sizeof(flow->app_name) - 1);
-				feature_list_read_unlock();
-				return AF_TRUE;
-			}
-		}
+
+	node = af_match_url_feature_ac(flow, &stat);
+	if (node) {
+			AF_LMT_DEBUG("ac match feature, appid=%d, feature=%s, ac_state_steps=%u, ac_fail_jumps=%u, ac_candidate_checks=%u, ac_match_count=%u\n",
+				node->app_id, node->feature, stat.ac_state_steps, stat.ac_fail_jumps, stat.ac_candidate_checks, stat.ac_match_count);
+		flow->app_id = node->app_id;
+		flow->feature = node;
+		strncpy(flow->app_name, node->app_name, sizeof(flow->app_name) - 1);
+		feature_list_read_unlock();
+		return AF_TRUE;
+	}
+
+	node = af_match_non_url_feature(flow, &stat);
+	if (node) {
+		AF_LMT_DEBUG("match feature, appid=%d, feature = %s\n", node->app_id, node->feature);
+		flow->app_id = node->app_id;
+		flow->feature = node;
+		strncpy(flow->app_name, node->app_name, sizeof(flow->app_name) - 1);
+		feature_list_read_unlock();
+		return AF_TRUE;
 	}
 	if (is_quic_flow(flow)) {
 		AF_LMT_INFO("match quic flow...\n");
@@ -1078,9 +1459,15 @@ int fwx_match_feature(flow_info_t *flow)
 		feature_list_read_unlock();
 		return AF_TRUE;
 	}
+	if (flow->https.match || flow->http.match) {
+		AF_LMT_DEBUG("feature miss, ac_state_steps=%u, ac_fail_jumps=%u, ac_candidate_checks=%u, fallback_checks=%u\n",
+			stat.ac_state_steps, stat.ac_fail_jumps, stat.ac_candidate_checks, stat.fallback_checks);
+	}
 	feature_list_read_unlock();
 	return AF_FALSE;
 }
+
+
 
 int match_app_filter_rule(int appid, af_client_info_t *client)
 {
@@ -1868,6 +2255,10 @@ static void fwx_user_msg_handle(char *data, int len)
 		AF_INFO("clean feature\n");
 		af_clean_feature_list();
 		break;
+	case FWX_NL_MSG_FEATURE_LOAD_DONE:
+		AF_INFO("feature load done\n");
+		af_feature_load_done_msg_handle();
+		break;
 	default:
 		break;
 	}
@@ -2148,13 +2539,12 @@ void af_clear_active_app_list(void)
 	spin_unlock_bh(&active_app_list_lock);
 }
 
-
 static int af_is_invalid_active_host(const char *host)
 {
-    if (!host)
-        return 1;
+	if (!host)
+		return 1;
 
-    return strchr(host, '.') ? 0 : 1; 
+	return strchr(host, '.') ? 0 : 1;
 }
 
 void af_update_active_host_list(af_client_info_t *client, flow_info_t *flow)
@@ -2185,11 +2575,10 @@ void af_update_active_host_list(af_client_info_t *client, flow_info_t *flow)
 	} else {
 		return;  
 	}
+
+	if (af_is_invalid_active_host(host_buf))
+		return;
 	
-
-    if (af_is_invalid_active_host(host_buf))
-        return;
-
 	spin_lock_bh(&active_host_list_lock);
 	
 	
@@ -2598,4 +2987,3 @@ void af_active_host_clean_procfs(void)
 
 module_init(fwx_init);
 module_exit(fwx_fini);
-
