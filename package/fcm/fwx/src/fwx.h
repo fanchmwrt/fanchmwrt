@@ -5,7 +5,7 @@
 */
 #ifndef __FWX_H__
 #define __FWX_H__
-#define FWX_VERSION "1.0.2"
+#define FWX_VERSION "1.0.3"
 #define MAX_FWX_NL_MSG_LEN 1024
 #define FWX_TIMER_INTERVAL 1
 #define MAX_HOST_LEN 40
@@ -21,7 +21,6 @@
 #include <linux/list.h>
 #include <linux/in6.h>
 
-#define AF_VERSION "5.3.1"
 #define AF_FEATURE_CONFIG_FILE "/tmp/feature.cfg"
 
 #define MAX_DPI_PKT_NUM 64
@@ -40,6 +39,11 @@
 #define MAX_BYPASS_DPI_PKT_LEN 600
 
 #define FWX_QUIC_PROTO 10
+#define DNS_PORT 53
+#define DNS_HEADER_LEN 12
+#define DNS_TCP_PREFIX_LEN 2
+#define MAX_DNS_DOMAIN_LEN MAX_HOST_URL_LEN
+#define MAX_DNS_QUERY_NUM 16
 
 extern u_int32_t fwx_log_level;
 
@@ -154,6 +158,15 @@ typedef struct port_info
 	range_value_t range_list[MAX_PORT_RANGE_NUM];
 } port_info_t;
 
+typedef struct dns_proto{
+	int match;
+	int query_num;
+	int qdcount;
+	char domain[MAX_DNS_QUERY_NUM][MAX_DNS_DOMAIN_LEN];
+}dns_proto_t;
+
+
+
 typedef struct af_feature_node{
 	struct list_head  		head;
 	u_int32_t app_id;
@@ -189,6 +202,7 @@ typedef struct flow_info{
 	int l4_len;
 	http_proto_t http;
 	https_proto_t https;
+	dns_proto_t dns;
 	u_int32_t app_id;
 	u_int8_t app_name[MAX_APP_NAME_LEN];
 	u_int8_t drop;

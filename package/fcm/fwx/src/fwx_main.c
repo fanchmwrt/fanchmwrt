@@ -22,6 +22,7 @@
 #include <linux/netfilter_ipv4.h>
 #include <linux/netfilter_ipv6.h>
 #include <linux/ipv6.h>
+#include <linux/inet.h>
 #include <linux/in6.h>
 #include <linux/timer.h>
 #include <linux/ktime.h>
@@ -42,7 +43,7 @@
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("www.fanchmwrt.com");
 MODULE_DESCRIPTION("fwx module");
-MODULE_VERSION(AF_VERSION);
+MODULE_VERSION(FWX_VERSION);
 struct list_head af_feature_head = LIST_HEAD_INIT(af_feature_head);
 
 DEFINE_RWLOCK(af_feature_lock);
@@ -136,6 +137,99 @@ char *ipv6_to_str(const struct in6_addr *addr, char *str)
 	return str;
 }
 
+static int af_is_digit_str(const char *str)
+{
+	if (!str || !*str) {
+		return 0;
+	}
+
+	while (*str) {
+		if (*str < '0' || *str > '9') {
+			return 0;
+		}
+		str++;
+	}
+
+	return 1;
+}
+
+static int af_is_ipv4_literal(const char *str)
+{
+	u8 buf[4];
+
+	if (!str || !*str) {
+		return 0;
+	}
+
+	return in4_pton(str, -1, buf, -1, NULL) ? 1 : 0;
+}
+
+static int af_is_ipv6_literal(const char *str)
+{
+	u8 buf[sizeof(struct in6_addr)];
+
+	if (!str || !*str) {
+		return 0;
+	}
+
+	return in6_pton(str, -1, buf, -1, NULL) ? 1 : 0;
+}
+
+static int af_is_ip_literal_host(const char *host)
+{
+	char literal_buf[MAX_URL_MATCH_LEN] = {0};
+	const char *start = host;
+	const char *end = NULL;
+	const char *port_sep = NULL;
+	int host_len = 0;
+	int colon_count = 0;
+	int i = 0;
+
+	if (!host || !*host) {
+		return 0;
+	}
+
+	if (*start == '[') {
+		end = strchr(start + 1, ']');
+		if (!end) {
+			return 0;
+		}
+
+		host_len = end - (start + 1);
+		if (host_len <= 0 || host_len >= (MAX_URL_MATCH_LEN - 1)) {
+			return 0;
+		}
+
+		memcpy(literal_buf, start + 1, host_len);
+		literal_buf[host_len] = '\0';
+		return af_is_ipv6_literal(literal_buf);
+	}
+
+	for (i = 0; start[i]; i++) {
+		if (start[i] == ':') {
+			colon_count++;
+			port_sep = start + i;
+		}
+	}
+
+	if (colon_count > 1) {
+		return af_is_ipv6_literal(start);
+	}
+
+	if (colon_count == 1 && port_sep && af_is_digit_str(port_sep + 1)) {
+		host_len = port_sep - start;
+		if (host_len <= 0 || host_len >= (MAX_URL_MATCH_LEN - 1)) {
+			return 0;
+		}
+
+		memcpy(literal_buf, start, host_len);
+		literal_buf[host_len] = '\0';
+		return af_is_ipv4_literal(literal_buf) || af_is_ipv6_literal(literal_buf);
+	}
+
+	return af_is_ipv4_literal(start) || af_is_ipv6_literal(start);
+}
+
 static int af_get_flow_host(flow_info_t *flow, char *host_buf, int host_buf_len, int *host_len)
 {
 	int copy_len = 0;
@@ -155,7 +249,57 @@ static int af_get_flow_host(flow_info_t *flow, char *host_buf, int host_buf_len,
 	}
 
 	host_buf[copy_len] = '\0';
+	if (af_is_ip_literal_host(host_buf)) {
+		return -1;
+	}
 	*host_len = copy_len;
+	return 0;
+}
+
+static int af_is_flow_host_ip_literal(flow_info_t *flow)
+{
+	char host_buf[MAX_URL_MATCH_LEN] = {0};
+	int copy_len = 0;
+
+	if (!flow) {
+		return 0;
+	}
+
+	if (flow->https.match == AF_TRUE && flow->https.url_pos && flow->https.url_len > 0) {
+		copy_len = flow->https.url_len >= (sizeof(host_buf) - 1) ? (sizeof(host_buf) - 1) : flow->https.url_len;
+		memcpy(host_buf, flow->https.url_pos, copy_len);
+	} else if (flow->http.match == AF_TRUE && flow->http.host_pos && flow->http.host_len > 0) {
+		copy_len = flow->http.host_len >= (sizeof(host_buf) - 1) ? (sizeof(host_buf) - 1) : flow->http.host_len;
+		memcpy(host_buf, flow->http.host_pos, copy_len);
+	} else {
+		return 0;
+	}
+
+	host_buf[copy_len] = '\0';
+	return af_is_ip_literal_host(host_buf);
+}
+
+static int af_copy_dns_domain(flow_info_t *flow, int index, char *host_buf, int host_buf_len, int *host_len)
+{
+	int copy_len = 0;
+
+	if (!flow || !host_buf || host_buf_len <= 1) {
+		return -1;
+	}
+	if (flow->dns.match != AF_TRUE || index < 0 || index >= flow->dns.query_num || index >= MAX_DNS_QUERY_NUM) {
+		return -1;
+	}
+	if (flow->dns.domain[index][0] == '\0') {
+		return -1;
+	}
+
+	copy_len = strlen(flow->dns.domain[index]);
+	copy_len = copy_len >= (host_buf_len - 1) ? (host_buf_len - 1) : copy_len;
+	strncpy(host_buf, flow->dns.domain[index], copy_len);
+	host_buf[copy_len] = '\0';
+	if (host_len) {
+		*host_len = copy_len;
+	}
 	return 0;
 }
 
@@ -421,17 +565,13 @@ static int af_rebuild_url_ac(void)
 	return ret;
 }
 
-static af_feature_node_t *af_match_url_feature_ac(flow_info_t *flow, af_ac_match_stat_t *stat)
+static af_feature_node_t *af_match_url_text_ac(flow_info_t *flow, af_ac_match_stat_t *stat,
+	char *host_buf, int host_len, int check_basic_cond)
 {
-	char host_buf[MAX_URL_MATCH_LEN] = {0};
-	int host_len = 0;
 	int i = 0;
 	af_ac_node_t *state = NULL;
 
-	if (!flow || !stat || !g_url_ac.ready || !g_url_ac.root) {
-		return NULL;
-	}
-	if (af_get_flow_host(flow, host_buf, sizeof(host_buf), &host_len) < 0 || host_len <= 0) {
+	if (!flow || !stat || !host_buf || host_len <= 0 || !g_url_ac.ready || !g_url_ac.root) {
 		return NULL;
 	}
 
@@ -458,13 +598,81 @@ static af_feature_node_t *af_match_url_feature_ac(flow_info_t *flow, af_ac_match
 				if (!feature) {
 					continue;
 				}
-				if (!af_match_basic_cond(flow, feature)) {
+				if (check_basic_cond && !af_match_basic_cond(flow, feature)) {
 					continue;
 				}
 				stat->ac_match_count++;
 				return feature;
 			}
 			iter = iter->fail;
+		}
+	}
+	return NULL;
+}
+
+static af_feature_node_t *af_match_url_feature_ac(flow_info_t *flow, af_ac_match_stat_t *stat)
+{
+	af_feature_node_t *node = NULL;
+	char host_buf[MAX_URL_MATCH_LEN] = {0};
+	int host_len = 0;
+	int i = 0;
+
+	if (!flow || !stat || !g_url_ac.ready || !g_url_ac.root) {
+		return NULL;
+	}
+	if (af_get_flow_host(flow, host_buf, sizeof(host_buf), &host_len) == 0 && host_len > 0) {
+		node = af_match_url_text_ac(flow, stat, host_buf, host_len, 1);
+		if (node) {
+			return node;
+		}
+	}
+
+	if (flow->dns.match != AF_TRUE) {
+		return NULL;
+	}
+	for (i = 0; i < flow->dns.query_num && i < MAX_DNS_QUERY_NUM; i++) {
+		host_buf[0] = 0x0;
+		host_len = 0;
+		if (af_copy_dns_domain(flow, i, host_buf, sizeof(host_buf), &host_len) < 0 || host_len <= 0) {
+			continue;
+		}
+		node = af_match_url_text_ac(flow, stat, host_buf, host_len, 0);
+		if (node) {
+			AF_LMT_INFO("match dns domain:%s, appid=%d\n", host_buf, node->app_id);
+			return node;
+		}
+	}
+	return NULL;
+}
+
+static af_feature_node_t *af_match_dns_regex_feature(flow_info_t *flow, af_ac_match_stat_t *stat)
+{
+	af_feature_node_t *n = NULL;
+	af_feature_node_t *node = NULL;
+	char domain_buf[MAX_URL_MATCH_LEN] = {0};
+	int i = 0;
+
+	if (!flow || flow->dns.match != AF_TRUE || list_empty(&af_feature_head)) {
+		return NULL;
+	}
+
+	for (i = 0; i < flow->dns.query_num && i < MAX_DNS_QUERY_NUM; i++) {
+		domain_buf[0] = 0x0;
+		if (af_copy_dns_domain(flow, i, domain_buf, sizeof(domain_buf), NULL) < 0 || domain_buf[0] == '\0') {
+			continue;
+		}
+		list_for_each_entry_safe(node, n, &af_feature_head, head) {
+			if (strlen(node->host_url) == 0 || !af_is_regex_host_pattern(node->host_url)) {
+				continue;
+			}
+			if (stat) {
+				stat->fallback_checks++;
+			}
+			if (regexp_match(node->host_url, domain_buf)) {
+				AF_LMT_INFO("match dns domain:%s	 reg = %s, appid=%d\n",
+						 domain_buf, node->host_url, node->app_id);
+				return node;
+			}
 		}
 	}
 	return NULL;
@@ -1308,29 +1516,36 @@ int af_match_by_pos(flow_info_t *flow, af_feature_node_t *node)
 int af_match_by_url(flow_info_t *flow, af_feature_node_t *node)
 {
 	char reg_url_buf[MAX_URL_MATCH_LEN] = {0};
+	int i = 0;
+	int host_len = 0;
 
 	if (!flow || !node)
 		return AF_FALSE;
 
-	if (flow->https.match == AF_TRUE && flow->https.url_pos)
-	{
-		if (flow->https.url_len >= MAX_URL_MATCH_LEN)
-			strncpy(reg_url_buf, flow->https.url_pos, MAX_URL_MATCH_LEN - 1);
-		else
-			strncpy(reg_url_buf, flow->https.url_pos, flow->https.url_len);
-	}
-	else if (flow->http.match == AF_TRUE && flow->http.host_pos)
-	{
-		if (flow->http.host_len >= MAX_URL_MATCH_LEN)
-			strncpy(reg_url_buf, flow->http.host_pos, MAX_URL_MATCH_LEN - 1);
-		else
-			strncpy(reg_url_buf, flow->http.host_pos, flow->http.host_len);
-	}
+
+	if (af_get_flow_host(flow, reg_url_buf, sizeof(reg_url_buf), &host_len) < 0)
+		reg_url_buf[0] = '\0';
 	if (strlen(reg_url_buf) > 0 && strlen(node->host_url) > 0 && regexp_match(node->host_url, reg_url_buf))
 	{
 		AF_DEBUG("match url:%s	 reg = %s, appid=%d\n",
 				 reg_url_buf, node->host_url, node->app_id);
 		return AF_TRUE;
+	}
+
+	if (flow->dns.match == AF_TRUE && strlen(node->host_url) > 0)
+	{
+		for (i = 0; i < flow->dns.query_num && i < MAX_DNS_QUERY_NUM; i++)
+		{
+			memset(reg_url_buf, 0x0, sizeof(reg_url_buf));
+			if (af_copy_dns_domain(flow, i, reg_url_buf, sizeof(reg_url_buf), NULL) < 0)
+				continue;
+			if (strlen(reg_url_buf) > 0 && regexp_match(node->host_url, reg_url_buf))
+			{
+				AF_DEBUG("match dns domain:%s	 reg = %s, appid=%d\n",
+						 reg_url_buf, node->host_url, node->app_id);
+				return AF_TRUE;
+			}
+		}
 	}
 
 
@@ -1426,16 +1641,32 @@ int fwx_match_feature(flow_info_t *flow)
 {
 	af_feature_node_t *node = NULL;
 	af_ac_match_stat_t stat;
-	char host_buf[MAX_URL_MATCH_LEN] = {0};
-	int host_len = 0;
 
 	memset(&stat, 0x0, sizeof(stat));
 	feature_list_read_lock();
 
+	if (af_is_flow_host_ip_literal(flow)) {
+		feature_list_read_unlock();
+		return AF_FALSE;
+	}
+
 	node = af_match_url_feature_ac(flow, &stat);
 	if (node) {
-			AF_LMT_DEBUG("ac match feature, appid=%d, feature=%s, ac_state_steps=%u, ac_fail_jumps=%u, ac_candidate_checks=%u, ac_match_count=%u\n",
+			AF_LMT_INFO("ac match feature, appid=%d, feature=%s, ac_state_steps=%u, ac_fail_jumps=%u, ac_candidate_checks=%u, ac_match_count=%u\n",
 				node->app_id, node->feature, stat.ac_state_steps, stat.ac_fail_jumps, stat.ac_candidate_checks, stat.ac_match_count);
+
+
+
+		flow->app_id = node->app_id;
+		flow->feature = node;
+		strncpy(flow->app_name, node->app_name, sizeof(flow->app_name) - 1);
+		feature_list_read_unlock();
+		return AF_TRUE;
+	}
+
+	node = af_match_dns_regex_feature(flow, &stat);
+	if (node) {
+		AF_LMT_INFO("match dns regex feature, appid=%d, feature = %s\n", node->app_id, node->feature);
 		flow->app_id = node->app_id;
 		flow->feature = node;
 		strncpy(flow->app_name, node->app_name, sizeof(flow->app_name) - 1);
@@ -1460,13 +1691,143 @@ int fwx_match_feature(flow_info_t *flow)
 		return AF_TRUE;
 	}
 	if (flow->https.match || flow->http.match) {
-		AF_LMT_DEBUG("feature miss, ac_state_steps=%u, ac_fail_jumps=%u, ac_candidate_checks=%u, fallback_checks=%u\n",
+		AF_LMT_INFO("feature miss, ac_state_steps=%u, ac_fail_jumps=%u, ac_candidate_checks=%u, fallback_checks=%u\n",
 			stat.ac_state_steps, stat.ac_fail_jumps, stat.ac_candidate_checks, stat.fallback_checks);
 	}
 	feature_list_read_unlock();
 	return AF_FALSE;
 }
 
+
+static int af_parse_dns_query_name(unsigned char *dns_payload, int dns_len, int query_offset,
+	char *domain, int domain_len, int *next_query_offset)
+{
+	int offset;
+	int label_len;
+	int out_len = 0;
+	int i;
+	unsigned char c;
+
+	if (!dns_payload || !domain || !next_query_offset || domain_len <= 1 || query_offset < DNS_HEADER_LEN)
+		return -1;
+	if (dns_len <= DNS_HEADER_LEN || query_offset >= dns_len)
+		return -1;
+
+	offset = query_offset;
+	while (offset < dns_len)
+	{
+		label_len = dns_payload[offset++];
+		if (label_len == 0)
+			break;
+		if (label_len & 0xC0)
+			return -1;
+		if (label_len > 63 || offset + label_len > dns_len)
+			return -1;
+
+		if (out_len > 0)
+		{
+			if (out_len >= domain_len - 1)
+				return -1;
+			domain[out_len++] = '.';
+		}
+
+		for (i = 0; i < label_len; i++)
+		{
+			c = dns_payload[offset + i];
+			if (c >= 'A' && c <= 'Z')
+				c = c + ('a' - 'A');
+			if (out_len >= domain_len - 1)
+				return -1;
+			domain[out_len++] = c;
+		}
+		offset += label_len;
+	}
+
+	if (out_len <= 0)
+		return -1;
+	if (offset + 4 > dns_len) /* qtype + qclass */
+		return -1;
+
+	domain[out_len] = 0x0;
+	*next_query_offset = offset + 4;
+	return 0;
+}
+
+int dpi_dns_proto(flow_info_t *flow)
+{
+	unsigned char *dns_payload;
+	int flags;
+	int qdcount;
+	int query_offset;
+	int i;
+	int dns_len;
+	int msg_len;
+	int parsed_num = 0;
+
+	//printk("%s %d begin dpi dns sport = %d, dport = %d, proto = %d\n", __func__, __LINE__,
+	//flow->sport, flow->dport, flow->l4_protocol);
+	if (!flow || !flow->l4_data || flow->l4_len <= DNS_HEADER_LEN)
+		return -1;
+
+	if ((flow->sport != DNS_PORT) && (flow->dport != DNS_PORT))
+		return -1;
+
+
+	dns_payload = flow->l4_data;
+	dns_len = flow->l4_len;
+
+	if (flow->l4_protocol == IPPROTO_TCP)
+	{
+		if (dns_len <= DNS_TCP_PREFIX_LEN + DNS_HEADER_LEN)
+			return -1;
+
+		msg_len = (dns_payload[0] << 8) | dns_payload[1];
+		dns_payload += DNS_TCP_PREFIX_LEN;
+		dns_len -= DNS_TCP_PREFIX_LEN;
+		if (msg_len <= 0 || msg_len > dns_len)
+			return -1;
+		dns_len = msg_len;
+	}
+	else if (flow->l4_protocol != IPPROTO_UDP)
+	{
+		return -1;
+	}
+
+
+	flags = (dns_payload[2] << 8) | dns_payload[3];
+	qdcount = (dns_payload[4] << 8) | dns_payload[5];
+	if ((flags & 0x8000) || qdcount <= 0)
+		return -1;
+
+	flow->dns.qdcount = qdcount;
+	query_offset = DNS_HEADER_LEN;
+
+	for (i = 0; i < qdcount && parsed_num < MAX_DNS_QUERY_NUM; i++)
+	{
+		if (0 != af_parse_dns_query_name(dns_payload, dns_len, query_offset,
+			flow->dns.domain[parsed_num], sizeof(flow->dns.domain[parsed_num]), &query_offset))
+		{
+			break;
+		}
+
+	AF_LMT_INFO("src=" NIPQUAD_FMT ",dst=" NIPQUAD_FMT ",sport: %d, dport: %d, data_len: %d\n",
+		NIPQUAD(flow->src), NIPQUAD(flow->dst), flow->sport, flow->dport, flow->l4_len);
+
+
+		AF_LMT_INFO("match dns domain[%d/%d]: %s, sport:%d, dport:%d\n",
+			parsed_num + 1, qdcount, flow->dns.domain[parsed_num], flow->sport, flow->dport);
+		parsed_num++;
+	}
+
+	if (parsed_num > 0)
+	{
+		flow->dns.match = AF_TRUE;
+		flow->dns.query_num = parsed_num;
+		return 0;
+	}
+
+	return -1;
+}
 
 
 int match_app_filter_rule(int appid, af_client_info_t *client)
@@ -1569,6 +1930,7 @@ int af_match_local_packet(flow_info_t *f)
 int update_url_visiting_info(af_client_info_t *client, flow_info_t *flow)
 {
 	char *host = NULL;
+	char host_buf[MAX_REPORT_URL_LEN] = {0};
 	unsigned int len = 0;
 	if (!client || !flow)
 		return -1;
@@ -1585,17 +1947,23 @@ int update_url_visiting_info(af_client_info_t *client, flow_info_t *flow)
 	if (!host || len < MIN_REPORT_URL_LEN || len >= MAX_REPORT_URL_LEN)
 		return -1;
 
-	memcpy(client->visiting.visiting_url, host, len);
+	memcpy(host_buf, host, len);
+	host_buf[len] = 0x0;
+	if (af_is_ip_literal_host(host_buf))
+		return -1;
+
+	memcpy(client->visiting.visiting_url, host_buf, len);
 	client->visiting.visiting_url[len] = 0x0; 
 	client->visiting.url_time = af_get_timestamp_sec();
 	return 0;
 }
 
 
-int dpi_main(struct sk_buff *skb, flow_info_t *flow)
+int dpi_main(flow_info_t *flow)
 {
 	dpi_http_proto(flow);
 	dpi_https_proto(flow);
+	dpi_dns_proto(flow);
 	if (TEST_MODE())
 		dump_flow_info(flow);
 
@@ -1621,6 +1989,46 @@ int is_ipv4_multicast(uint32_t ip)
 {
 	return (ip & 0xF0000000) == 0xE0000000;
 }
+
+static int is_ipv4_private_lan(uint32_t ip)
+{
+	if ((ip & 0xFF000000) == 0x0A000000)
+		return 1;
+	if ((ip & 0xFFF00000) == 0xAC100000)
+		return 1;
+	if ((ip & 0xFFFF0000) == 0xC0A80000)
+		return 1;
+	return 0;
+}
+
+static int af_is_ipv6_private_lan(const struct in6_addr *addr)
+{
+	if (!addr)
+		return 0;
+
+	if (ipv6_addr_loopback(addr))
+		return 1;
+	if ((addr->s6_addr[0] & 0xFE) == 0xFC)
+		return 1;
+	if (addr->s6_addr[0] == 0xFE && (addr->s6_addr[1] & 0xC0) == 0x80)
+		return 1;
+
+	return 0;
+}
+
+static int af_match_private_lan_dst(flow_info_t *f)
+{
+	if (!f)
+		return 0;
+
+	if (f->dst && is_ipv4_private_lan(ntohl(f->dst)))
+		return 1;
+	if (f->dst6 && af_is_ipv6_private_lan(f->dst6))
+		return 1;
+
+	return 0;
+}
+
 int af_check_bcast_ip(flow_info_t *f)
 {
 
@@ -1696,6 +2104,8 @@ u_int32_t fwx_hook_bypass_handle(struct sk_buff *skb, struct net_device *dev)
 
 	memset((char *)&flow, 0x0, sizeof(flow_info_t));
 	if (parse_flow_proto(skb, &flow) < 0)
+		return NF_ACCEPT;
+	if (af_match_private_lan_dst(&flow))
 		return NF_ACCEPT;
 
 	if (flow.src || flow.dst)
@@ -1776,14 +2186,14 @@ u_int32_t fwx_hook_bypass_handle(struct sk_buff *skb, struct net_device *dev)
 		if (flow.client_hello > 0)
 			AF_LMT_DEBUG("client hello is %d\n", flow.client_hello);
 
-		dpi_main(skb, &flow);
+		dpi_main(&flow);
 		conn->client_hello = flow.client_hello;
 		if (!is_record_whitelist) {
 			update_url_visiting_info(client, &flow);
 			af_update_active_host_list(client, &flow);
 		}
 
-	 	if (fwx_match_feature(&flow)){
+		if (fwx_match_feature(&flow)){
 			conn->app_id = flow.app_id;
 			conn->drop = flow.drop;
 			if (flow.app_id < 1000){ 
@@ -1866,7 +2276,8 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 	memset((char *)&flow, 0x0, sizeof(flow_info_t));
 	if (parse_flow_proto(skb, &flow) < 0)
 		return NF_ACCEPT;
-
+	if (af_match_private_lan_dst(&flow))
+		return NF_ACCEPT;
 	ct = nf_ct_get(skb, &ctinfo);
 	if (ct == NULL)
 		return NF_ACCEPT;
@@ -1961,7 +2372,7 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 			return NF_ACCEPT;
 		malloc_data = 1;
 	}
-	dpi_main(skb, &flow);
+	dpi_main(&flow);
 
 	if (!is_record_whitelist) {
 		update_url_visiting_info(client, &flow);
@@ -2041,7 +2452,6 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 		AF_LMT_INFO("match %s %pI4(%d)--> %pI4(%d) len = %d, %d\n ", IPPROTO_TCP == flow.l4_protocol ? "tcp" : "udp",
 					&flow.src, flow.sport, &flow.dst, flow.dport, skb->len, flow.app_id);
 	}
-	
 	if (malloc_data)
 	{
 		if (flow.l4_data)
@@ -2053,19 +2463,18 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 0)
-static u_int32_t fwx_hook(void *priv,
+static u_int32_t fwx_pre_hook(void *priv,
 								 struct sk_buff *skb,
 								 const struct nf_hook_state *state)
 {
 #else
-static u_int32_t fwx_hook(unsigned int hook,
+static u_int32_t fwx_pre_hook(unsigned int hook,
 								 struct sk_buff *skb,
 								 const struct net_device *in,
 								 const struct net_device *out,
 								 int (*okfn)(struct sk_buff *))
 {
 #endif
-
 	if (AF_MODE_BYPASS == af_work_mode)
 		return NF_ACCEPT;
 	return fwx_hook_gateway_handle(skb, skb->dev);
@@ -2092,62 +2501,62 @@ static u_int32_t fwx_by_pass_hook(unsigned int hook,
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 16, 0)
 static struct nf_hook_ops fwx_ops[] __read_mostly = {
 	{
-		.hook = fwx_hook,
+		.hook = fwx_pre_hook,
 		.pf = NFPROTO_INET,
-		.hooknum = NF_INET_FORWARD,
-		.priority = NF_IP_PRI_MANGLE + 1,
+		.hooknum = NF_INET_PRE_ROUTING,
+		.priority = NF_IP_PRI_CONNTRACK + 1,
 
 	},
 	{
 		.hook = fwx_by_pass_hook,
 		.pf = NFPROTO_INET,
 		.hooknum = NF_INET_PRE_ROUTING,
-		.priority = NF_IP_PRI_MANGLE + 1,
+		.priority = NF_IP_PRI_CONNTRACK + 1,
 	},
 };
 #elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 0)
 static struct nf_hook_ops fwx_ops[] __read_mostly = {
 	{
-		.hook = fwx_hook,
+		.hook = fwx_pre_hook,
 		.pf = NFPROTO_IPV4,
-		.hooknum = NF_INET_FORWARD,
-		.priority = NF_IP_PRI_MANGLE + 1,
+		.hooknum = NF_INET_PRE_ROUTING,
+		.priority = NF_IP_PRI_CONNTRACK + 1,
 	},
 	{
 		.hook = fwx_by_pass_hook,
 		.pf = NFPROTO_IPV4,
 		.hooknum = NF_INET_PRE_ROUTING,
-		.priority = NF_IP_PRI_MANGLE + 1,
+		.priority = NF_IP_PRI_CONNTRACK + 1,
 	},
 	{
-		.hook = fwx_hook,
+		.hook = fwx_pre_hook,
 		.pf = NFPROTO_IPV6,
-		.hooknum = NF_INET_FORWARD,
-		.priority = NF_IP_PRI_MANGLE + 1,
+		.hooknum = NF_INET_PRE_ROUTING,
+		.priority = NF_IP_PRI_CONNTRACK + 1,
 
 	},
 	{
 		.hook = fwx_by_pass_hook,
 		.pf = NFPROTO_IPV6,
 		.hooknum = NF_INET_PRE_ROUTING,
-		.priority = NF_IP_PRI_MANGLE + 1,
+		.priority = NF_IP_PRI_CONNTRACK + 1,
 	},
 };
 #else
 static struct nf_hook_ops fwx_ops[] __read_mostly = {
 	{
-		.hook = fwx_hook,
+		.hook = fwx_pre_hook,
 		.owner = THIS_MODULE,
 		.pf = NFPROTO_IPV4,
-		.hooknum = NF_INET_FORWARD,
-		.priority = NF_IP_PRI_MANGLE + 1,
+		.hooknum = NF_INET_PRE_ROUTING,
+		.priority = NF_IP_PRI_CONNTRACK + 1,
 	},
 	{
-		.hook = fwx_hook,
+		.hook = fwx_pre_hook,
 		.owner = THIS_MODULE,
 		.pf = NFPROTO_IPV6,
-		.hooknum = NF_INET_FORWARD,
-		.priority = NF_IP_PRI_MANGLE + 1,
+		.hooknum = NF_INET_PRE_ROUTING,
+		.priority = NF_IP_PRI_CONNTRACK + 1,
 	},
 };
 #endif
@@ -2329,7 +2738,7 @@ static int __init fwx_init(void)
 		AF_ERROR("fwx register filter hooks failed!\n");
 	}
 	init_fwx_timer();
-	printk("fwx: Driver ver. %s - Copyright(c) 2025, fanchmwrt, <www.fanchmwrt.com>\n", AF_VERSION);
+	printk("fwx: Driver ver. %s - Copyright(c) 2026, fanchmwrt, <www.fanchmwrt.com>\n", FWX_VERSION);
 	printk("fwx: init ok\n");
 	return 0;
 }
@@ -2542,6 +2951,8 @@ void af_clear_active_app_list(void)
 static int af_is_invalid_active_host(const char *host)
 {
 	if (!host)
+		return 1;
+	if (af_is_ip_literal_host(host))
 		return 1;
 
 	return strchr(host, '.') ? 0 : 1;

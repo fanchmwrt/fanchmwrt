@@ -3871,7 +3871,7 @@ div.cbi-value var.cbi-tooltip-container,
 
 
 .breadcrumb-container {
-	margin: 0px 0px 10px 0px;
+	margin: 0px 0px 6px 0px;
 	padding: 0 0px;
 	width: 100%;
 }
@@ -3999,7 +3999,7 @@ div.cbi-value var.cbi-tooltip-container,
 	margin-right: 0 !important;
 	margin-top: 0 !important; 
 	margin-bottom: 0 !important; 
-    padding: 20px !important; 
+    padding: 12px 20px 20px !important;
 }
 
 :root:not([data-darkmode="true"]) #maincontent,
