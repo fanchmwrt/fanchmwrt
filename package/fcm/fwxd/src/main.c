@@ -23,8 +23,8 @@
 #include "fwx_app_filter.h"
 #include "check_main.h"
 
-//int current_log_level = LOG_LEVEL_WARN;
-int current_log_level = LOG_LEVEL_INFO;
+int current_log_level = LOG_LEVEL_WARN;
+//int current_log_level = LOG_LEVEL_INFO;
 int g_fwxd_debug_mode = 0;
 
 #define CMD_GET_LAN_IP_FMT   "ifconfig %s | grep 'inet addr' | awk '{print $2}' | awk -F: '{print $2}'"

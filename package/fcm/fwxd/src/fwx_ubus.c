@@ -788,30 +788,24 @@ typedef struct all_users_info {
 
 #define USER_PARENTAL_CONTROL_STATUS_FILE "/tmp/fwx_cache/user_parental_control_status"
 #define USER_PARENTAL_CONTROL_DETAIL_FILE "/tmp/fwx_cache/user_parental_control_detail.json"
-#define PC_STATUS_UNLIMITED "无限制"
-#define PC_STATUS_DISCONNECTED "已断网"
-#define PC_STATUS_APP_RESTRICTED "应用受限"
 #define BLACKLIST_MAC_FILTER_RULE_ID 102
 #define BLACKLIST_RULE_NAME "Internet Blacklist"
 #define PC_PERMISSION_UNLIMITED "unlimited"
 #define PC_PERMISSION_APP_LIMITED "app_limited"
 #define PC_PERMISSION_MAC_BLOCKED "mac_blocked"
-#define PC_PERMISSION_TEXT_UNLIMITED "Unrestricted"
-#define PC_PERMISSION_TEXT_APP_LIMITED "App Restricted"
-#define PC_PERMISSION_TEXT_MAC_BLOCKED "Disconnected"
 
-static const char *map_pc_status_text(const char *status_token)
+static const char *map_pc_status_key(const char *status_token)
 {
     if (!status_token || status_token[0] == '\0') {
-        return PC_STATUS_UNLIMITED;
+        return PC_PERMISSION_UNLIMITED;
     }
-    if (strcmp(status_token, "mac_blocked") == 0) {
-        return PC_STATUS_DISCONNECTED;
+    if (strcmp(status_token, PC_PERMISSION_MAC_BLOCKED) == 0) {
+        return PC_PERMISSION_MAC_BLOCKED;
     }
-    if (strcmp(status_token, "app_limited") == 0) {
-        return PC_STATUS_APP_RESTRICTED;
+    if (strcmp(status_token, PC_PERMISSION_APP_LIMITED) == 0) {
+        return PC_PERMISSION_APP_LIMITED;
     }
-    return PC_STATUS_UNLIMITED;
+    return PC_PERMISSION_UNLIMITED;
 }
 
 static void load_parental_control_status(all_users_info_t *au_info)
@@ -1011,19 +1005,19 @@ static const char *get_pc_status_for_mac(all_users_info_t *au_info, const char *
     int i;
 
     if (!au_info || !mac || mac[0] == '\0') {
-        return PC_STATUS_UNLIMITED;
+        return PC_PERMISSION_UNLIMITED;
     }
 
     if (is_blacklist_mac(au_info, mac)) {
-        return PC_STATUS_DISCONNECTED;
+        return PC_PERMISSION_MAC_BLOCKED;
     }
 
     for (i = 0; i < au_info->pc_status_num; i++) {
         if (strcasecmp(au_info->pc_status_items[i].mac, mac) == 0) {
-            return map_pc_status_text(au_info->pc_status_items[i].status);
+            return map_pc_status_key(au_info->pc_status_items[i].status);
         }
     }
-    return PC_STATUS_UNLIMITED;
+    return PC_PERMISSION_UNLIMITED;
 }
 
 static const char *get_pc_status_key_for_mac(all_users_info_t *au_info, const char *mac)
@@ -1071,20 +1065,6 @@ static struct json_object *find_user_detail_by_mac(struct json_object *users_obj
     }
 
     return NULL;
-}
-
-static const char *pc_get_permission_text(const char *permission_key)
-{
-    if (!permission_key || permission_key[0] == '\0') {
-        return PC_PERMISSION_TEXT_UNLIMITED;
-    }
-    if (strcmp(permission_key, PC_PERMISSION_MAC_BLOCKED) == 0) {
-        return PC_PERMISSION_TEXT_MAC_BLOCKED;
-    }
-    if (strcmp(permission_key, PC_PERMISSION_APP_LIMITED) == 0) {
-        return PC_PERMISSION_TEXT_APP_LIMITED;
-    }
-    return PC_PERMISSION_TEXT_UNLIMITED;
 }
 
 static void pc_get_current_time_context(int *current_weekday, int *current_minutes)
@@ -1366,7 +1346,7 @@ static struct json_object *pc_build_appfilter_rule(struct json_object *rule_obj,
     json_object_object_add(status_obj, "matched", json_object_new_int(matched));
     json_object_object_add(out_obj, "today_status", status_obj);
     json_object_object_add(out_obj, "permission_key", json_object_new_string(permission_key));
-    json_object_object_add(out_obj, "permission_text", json_object_new_string(pc_get_permission_text(permission_key)));
+    json_object_object_add(out_obj, "permission_text", json_object_new_string(permission_key));
     return out_obj;
 }
 
@@ -1507,7 +1487,7 @@ static struct json_object *pc_build_macfilter_rule(struct json_object *rule_obj,
     json_object_object_add(out_obj, "condition", condition_obj);
     json_object_object_add(out_obj, "today_status", status_obj);
     json_object_object_add(out_obj, "permission_key", json_object_new_string(permission_key));
-    json_object_object_add(out_obj, "permission_text", json_object_new_string(pc_get_permission_text(permission_key)));
+    json_object_object_add(out_obj, "permission_text", json_object_new_string(permission_key));
     return out_obj;
 }
 
@@ -1537,7 +1517,7 @@ static struct json_object *pc_build_blacklist_rule(const char *target_mac)
     json_object_object_add(status_obj, "matched", json_object_new_int(1));
     json_object_object_add(out_obj, "today_status", status_obj);
     json_object_object_add(out_obj, "permission_key", json_object_new_string(PC_PERMISSION_MAC_BLOCKED));
-    json_object_object_add(out_obj, "permission_text", json_object_new_string(pc_get_permission_text(PC_PERMISSION_MAC_BLOCKED)));
+    json_object_object_add(out_obj, "permission_text", json_object_new_string(PC_PERMISSION_MAC_BLOCKED));
     return out_obj;
 }
 
@@ -2786,8 +2766,7 @@ struct json_object *fwx_api_get_parental_control_detail(struct json_object *req_
     struct json_object *macfilter_rules_out = json_object_new_array();
     struct json_object *mac_obj = NULL;
     const char *mac = NULL;
-    const char *status_text = PC_STATUS_UNLIMITED;
-    const char *status_key = "unlimited";
+    const char *status_key = PC_PERMISSION_UNLIMITED;
     FILE *fp = NULL;
     long file_len = 0;
     char *json_buf = NULL;
@@ -2841,7 +2820,7 @@ struct json_object *fwx_api_get_parental_control_detail(struct json_object *req_
                     if (status_raw && status_raw[0] != '\0') {
                         status_key = status_raw;
                     }
-                    status_text = map_pc_status_text(status_key);
+                    status_key = map_pc_status_key(status_key);
                 }
 
                 if (json_object_object_get_ex(user_obj, "appfilter_rules", &app_rules_obj) &&
@@ -2862,8 +2841,7 @@ struct json_object *fwx_api_get_parental_control_detail(struct json_object *req_
             struct json_object *blacklist_rule = NULL;
             struct json_object *blacklist_rules_out = NULL;
 
-            status_key = "mac_blocked";
-            status_text = map_pc_status_text(status_key);
+            status_key = PC_PERMISSION_MAC_BLOCKED;
 
             blacklist_rules_out = json_object_new_array();
             if (blacklist_rules_out) {
@@ -2880,7 +2858,7 @@ struct json_object *fwx_api_get_parental_control_detail(struct json_object *req_
     if (json_buf) {
         free(json_buf);
     }
-    json_object_object_add(data_obj, "pc_status", json_object_new_string(status_text));
+    json_object_object_add(data_obj, "pc_status", json_object_new_string(status_key));
     json_object_object_add(data_obj, "pc_status_key", json_object_new_string(status_key));
     json_object_object_add(data_obj, "appfilter_rules", appfilter_rules_out);
     json_object_object_add(data_obj, "macfilter_rules", macfilter_rules_out);
@@ -4792,6 +4770,15 @@ static struct json_object *get_dashboard_active_app(void) {
         
 
         json_object_object_add(app, "mac", json_object_new_string(mac));
+
+        client_node_t *client = find_client_node(mac);
+        if (client) {
+            json_object_object_add(app, "hostname", json_object_new_string(client->hostname[0] ? client->hostname : ""));
+            json_object_object_add(app, "nickname", json_object_new_string(client->nickname[0] ? client->nickname : ""));
+        } else {
+            json_object_object_add(app, "hostname", json_object_new_string(""));
+            json_object_object_add(app, "nickname", json_object_new_string(""));
+        }
         
 
         json_object_object_add(app, "src_ip", json_object_new_string(src_ip));
@@ -5208,6 +5195,8 @@ static struct json_object *get_dashboard_interface_traffic(void) {
 
 struct json_object *fwx_api_get_dashboard_common(struct json_object *req_obj) {
     struct json_object *data_obj = json_object_new_object();
+    update_client_nickname();
+
     struct json_object *system_status = get_dashboard_system_status();
     struct json_object *network_status = get_dashboard_network_status();
     struct json_object *active_app = get_dashboard_active_app();

@@ -3882,9 +3882,10 @@ div.cbi-value var.cbi-tooltip-container,
 	padding: 8px 0px;
 	margin-bottom: 0;
 	list-style: none;
-	background-color: #f8f9fa;
+	background: #ffffff;
 	border-radius: 6px;
-	border: 1px solid #e9ecef;
+	border: 1px solid rgba(121, 141, 164, 0.36);
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 	font-size: 14px;
 }
 
@@ -3950,8 +3951,9 @@ div.cbi-value var.cbi-tooltip-container,
 
 
 [data-darkmode="true"] .breadcrumb {
-	background-color: rgba(42, 42, 42, 0.8);
-	border-color: rgba(64, 64, 64, 0.3);
+	background: rgba(255, 255, 255, 0.03);
+	border-color: rgba(255, 255, 255, 0.24);
+	box-shadow: none;
 	color: #E0E0E0;
 }
 

@@ -204,7 +204,6 @@ int fwx_api_mod_mac_filter_rule(cJSON *data_obj) {
 	if (!data_obj) {
 		return -1;
 	}
-	printk("mod mac filter rule\n");
 	rule_id_obj = cJSON_GetObjectItem(data_obj, "rule_id");
 
 	action_obj = cJSON_GetObjectItem(data_obj, "mac_action"); 
@@ -233,9 +232,6 @@ int fwx_api_mod_mac_filter_rule(cJSON *data_obj) {
 		mac_filter_write_unlock();
 	}
 	
-	if (action_obj) {
-		printk("action = %d\n", action_obj->valueint);
-	}
 
     if (action_obj){
 		if (action_obj->valueint == 1 || action_obj->valueint == 2) {
