@@ -12,7 +12,7 @@ TARGET_CFLAGS +=-Werror=implicit-function-declaration
 define Package/fwxd
   SECTION:=Base system
   CATEGORY:=Base system
-  DEPENDS:=+libubox +libubus  +libuci +libpthread +libjson-c +libblobmsg-json +libuci-lua +libfwx_common +libsqlite3 +libmosquitto +libcurl 
+  DEPENDS:=+libubox +libubus  +libuci +libpthread +libjson-c +libblobmsg-json +libuci-lua +libfwx_common +libsqlite3 +libmosquitto +libcurl +TARGET_x86:lm-sensors
   TITLE:=Fanchm fwx application
 endef
 
@@ -46,6 +46,7 @@ define Package/fwxd/install
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_DIR) $(1)/fwx_data
 	$(INSTALL_DIR) $(1)/fwx_root
+	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d/
 	$(CP) ./files/*.cfg $(1)/etc/fwxd/ 
 	$(INSTALL_BIN) ./files/uci-defaults/* $(1)/etc/uci-defaults/
 	$(INSTALL_BIN) ./files/fwx.init $(1)/etc/init.d/fwx
@@ -66,7 +67,7 @@ define Package/fwxd/install
 	$(INSTALL_DATA) ./files/fwx.version $(1)/etc/fwx_version
 	$(INSTALL_DATA) ./files/fwx_release $(1)/etc/fwx_release
 	$(INSTALL_DATA) ./files/fwx_init_status $(1)/etc/fwx_init_status
-
+	$(INSTALL_DATA) ./files/luci-app-fwx.json $(1)/usr/share/rpcd/acl.d/
 endef
 
 

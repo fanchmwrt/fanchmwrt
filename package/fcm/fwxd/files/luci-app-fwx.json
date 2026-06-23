@@ -1,0 +1,19 @@
+{
+    "luci-app-fwx": {
+        "description": "Grant access to fwx configuration",
+        "read": {
+            "uci": [ "fwx"],
+  			"ubus": {
+                "fwx": ["common"]
+             }
+
+        },  
+        "write": {
+            "cgi-io": [ "upload" ],
+            "file": {
+                "/fwx_data/*": [ "write" ]
+            },  
+            "uci": [ "fwx" ]
+        }   
+    }   
+}
