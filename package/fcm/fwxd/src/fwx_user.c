@@ -2435,7 +2435,7 @@ void update_client_online_status(void)
                 add_user_record(node, 1, now);
             }
             node->session_online_recorded = 0;
-            reset_online_session_stat(node, now);
+            save_client_backup_to_file(node);
         } else if (is_online && !node->session_online_recorded &&
                    (is_bypass_mode || node->active)) {
             add_user_record(node, 0, now);
@@ -2541,12 +2541,24 @@ void move_expired_online_visit_to_offline(void)
     }
 }
 
+static int is_invalid_visit_url(const char *url)
+{
+    if (!url || url[0] == '\0') {
+        return 1;
+    }
+    if (strcasecmp(url, "none") == 0 ||
+        strcasecmp(url, "undefined") == 0 ||
+        strcasecmp(url, "null") == 0) {
+        return 1;
+    }
+    return 0;
+}
+
 void update_client_visiting_info(void){
     char line_buf[256] = {0};
     char mac_buf[32] = {0};
-    char url_buf[32] = {0};
+    char url_buf[MAX_REPORT_URL_LEN] = {0};
     char app_buf[32] = {0};
-    char time_buf[32] = {0};
 
     FILE *fp = fopen("/proc/net/af_visit", "r");    
     if (!fp)
@@ -2557,15 +2569,21 @@ void update_client_visiting_info(void){
     fgets(line_buf, sizeof(line_buf), fp); // title
     while (fgets(line_buf, sizeof(line_buf), fp))   
     {
-        sscanf(line_buf, "%s %s %s", mac_buf, app_buf, url_buf);
+        memset(mac_buf, 0, sizeof(mac_buf));
+        memset(app_buf, 0, sizeof(app_buf));
+        memset(url_buf, 0, sizeof(url_buf));
+        if (sscanf(line_buf, "%31s %31s %63s", mac_buf, app_buf, url_buf) != 3) {
+            continue;
+        }
         client_node_t *node = find_client_node(mac_buf);
         if (!node)
             continue;
-        if (strcmp(url_buf, "none") == 0) {
+        if (is_invalid_visit_url(url_buf)) {
             node->visiting_url[0] = '\0';
         }
         else {
-            strncpy(node->visiting_url, url_buf, sizeof(node->visiting_url));
+            strncpy(node->visiting_url, url_buf, sizeof(node->visiting_url) - 1);
+            node->visiting_url[sizeof(node->visiting_url) - 1] = '\0';
         }
         node->visiting_app = atoi(app_buf);
     }

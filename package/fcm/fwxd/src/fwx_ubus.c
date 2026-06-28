@@ -730,7 +730,7 @@ static int parse_feature_cfg(struct json_object *class_list) {
                 char combined[256];
                 char icon_path[512];
                 snprintf(icon_path, sizeof(icon_path), "/www/luci-static/resources/app_icons/%s.png", appid_str);
-                int with_icon = access(icon_path, F_OK) == 0 ? 1 : 0; // 检查文件是否存在
+                int with_icon = access(icon_path, F_OK) == 0 ? 1 : 0; 
                 snprintf(combined, sizeof(combined), "%s,%s,%d", appid_str, name, with_icon);
                 json_object_array_add(app_list, json_object_new_string(combined));
             }
@@ -1098,6 +1098,63 @@ static int is_mac_in_blacklist_uci(const char *mac)
 
     uci_free_context(uci_ctx);
     return matched;
+}
+
+static int is_mac_in_whitelist_config(const char *config, const char *mac)
+{
+    struct uci_context *uci_ctx = NULL;
+    char mac_path[128] = {0};
+    char mac_str[32] = {0};
+    int num = 0;
+    int i;
+    int matched = 0;
+
+    if (!config || !mac || config[0] == '\0' || mac[0] == '\0') {
+        return 0;
+    }
+
+    uci_ctx = uci_alloc_context();
+    if (!uci_ctx) {
+        return 0;
+    }
+
+    snprintf(mac_path, sizeof(mac_path), "%s.@whitelist_mac[%%d].mac", config);
+    num = fwx_uci_get_list_num(uci_ctx, config, "whitelist_mac");
+    for (i = 0; i < num; i++) {
+        memset(mac_str, 0, sizeof(mac_str));
+        fwx_uci_get_array_value(uci_ctx, mac_path, i, mac_str, sizeof(mac_str));
+        if (mac_str[0] != '\0' && strcasecmp(mac_str, mac) == 0) {
+            matched = 1;
+            break;
+        }
+    }
+
+    uci_free_context(uci_ctx);
+    return matched;
+}
+
+static int is_appfilter_whitelist_mac(const char *mac)
+{
+    return is_mac_in_whitelist_config("appfilter_whitelist", mac);
+}
+
+static int is_macfilter_whitelist_mac(const char *mac)
+{
+    return is_mac_in_whitelist_config("macfilter_whitelist", mac);
+}
+
+static const char *apply_whitelist_pc_status(const char *status_key, int af_whitelist, int mf_whitelist)
+{
+    if (!status_key || status_key[0] == '\0') {
+        return PC_PERMISSION_UNLIMITED;
+    }
+    if (af_whitelist && strcmp(status_key, PC_PERMISSION_APP_LIMITED) == 0) {
+        return PC_PERMISSION_UNLIMITED;
+    }
+    if (mf_whitelist && strcmp(status_key, PC_PERMISSION_MAC_BLOCKED) == 0) {
+        return PC_PERMISSION_UNLIMITED;
+    }
+    return status_key;
 }
 
 static struct json_object *build_blacklist_rule_detail(const char *mac)
@@ -1873,11 +1930,17 @@ void all_users_callback(void *arg, client_node_t *client)
         LOG_ERROR("all_users_callback: Failed to create user_obj for mac=%s\n", client->mac);
         return;
     }
+    int af_whitelist = is_appfilter_whitelist_mac(client->mac);
+    int mf_whitelist = is_macfilter_whitelist_mac(client->mac);
+    const char *pc_status = apply_whitelist_pc_status(get_pc_status_for_mac(au_info, client->mac), af_whitelist, mf_whitelist);
+    const char *pc_status_key = apply_whitelist_pc_status(get_pc_status_key_for_mac(au_info, client->mac), af_whitelist, mf_whitelist);
     
     json_object_object_add(user_obj, "mac", json_object_new_string(client->mac));
-    json_object_object_add(user_obj, "pc_status", json_object_new_string(get_pc_status_for_mac(au_info, client->mac)));
-    json_object_object_add(user_obj, "pc_status_key", json_object_new_string(get_pc_status_key_for_mac(au_info, client->mac)));
+    json_object_object_add(user_obj, "pc_status", json_object_new_string(pc_status));
+    json_object_object_add(user_obj, "pc_status_key", json_object_new_string(pc_status_key));
     json_object_object_add(user_obj, "in_blacklist", json_object_new_int(is_blacklist_mac(au_info, client->mac) ? 1 : 0));
+    json_object_object_add(user_obj, "af_whitelist", json_object_new_int(af_whitelist ? 1 : 0));
+    json_object_object_add(user_obj, "mf_whitelist", json_object_new_int(mf_whitelist ? 1 : 0));
     json_object_object_add(user_obj, "online", json_object_new_int(client->online));
     json_object_object_add(user_obj, "active", json_object_new_int(client->active));
     json_object_object_add(user_obj, "is_wireless", json_object_new_int(client->is_wireless));
@@ -1927,10 +1990,12 @@ void all_users_callback(void *arg, client_node_t *client)
             json_object_object_add(user_obj, "url", json_object_new_string(""));
         if (client->visiting_app > 0) {
             const char *app_name = get_app_name_by_id(client->visiting_app);
+            json_object_object_add(user_obj, "app_id", json_object_new_int(client->visiting_app));
             json_object_object_add(user_obj, "app", json_object_new_string(app_name));
             LOG_DEBUG("all_users_callback: Added visiting app=%s (id=%d), url=%s for mac=%s\n", 
                    app_name, client->visiting_app, client->visiting_url, client->mac);
         } else {
+            json_object_object_add(user_obj, "app_id", json_object_new_int(0));
             json_object_object_add(user_obj, "app", json_object_new_string(""));
         }
         
@@ -3047,6 +3112,8 @@ struct json_object *fwx_api_get_parental_control_detail(struct json_object *req_
     struct json_object *users_obj = NULL;
     struct json_object *user_obj = NULL;
     int blacklist_hit = 0;
+    int af_whitelist = 0;
+    int mf_whitelist = 0;
 
     if (!data_obj || !appfilter_rules_out || !macfilter_rules_out) {
         if (data_obj) json_object_put(data_obj);
@@ -3063,6 +3130,8 @@ struct json_object *fwx_api_get_parental_control_detail(struct json_object *req_
     }
 
     if (mac && mac[0] != '\0') {
+        af_whitelist = is_appfilter_whitelist_mac(mac);
+        mf_whitelist = is_macfilter_whitelist_mac(mac);
         blacklist_hit = is_mac_in_blacklist_uci(mac);
 
         fp = fopen(USER_PARENTAL_CONTROL_DETAIL_FILE, "r");
@@ -3096,13 +3165,15 @@ struct json_object *fwx_api_get_parental_control_detail(struct json_object *req_
                     status_key = map_pc_status_key(status_key);
                 }
 
-                if (json_object_object_get_ex(user_obj, "appfilter_rules", &app_rules_obj) &&
+                if (!af_whitelist &&
+                    json_object_object_get_ex(user_obj, "appfilter_rules", &app_rules_obj) &&
                     json_object_is_type(app_rules_obj, json_type_array)) {
                     json_object_put(appfilter_rules_out);
                     appfilter_rules_out = json_object_get(app_rules_obj);
                 }
 
-                if (json_object_object_get_ex(user_obj, "macfilter_rules", &mac_rules_obj) &&
+                if (!mf_whitelist &&
+                    json_object_object_get_ex(user_obj, "macfilter_rules", &mac_rules_obj) &&
                     json_object_is_type(mac_rules_obj, json_type_array)) {
                     json_object_put(macfilter_rules_out);
                     macfilter_rules_out = json_object_get(mac_rules_obj);
@@ -3110,7 +3181,7 @@ struct json_object *fwx_api_get_parental_control_detail(struct json_object *req_
             }
         }
 
-        if (blacklist_hit) {
+        if (blacklist_hit && !mf_whitelist) {
             struct json_object *blacklist_rule = NULL;
             struct json_object *blacklist_rules_out = NULL;
 
@@ -3126,6 +3197,8 @@ struct json_object *fwx_api_get_parental_control_detail(struct json_object *req_
                 macfilter_rules_out = blacklist_rules_out;
             }
         }
+
+        status_key = apply_whitelist_pc_status(status_key, af_whitelist, mf_whitelist);
     }
 
     if (json_buf) {
@@ -3133,6 +3206,8 @@ struct json_object *fwx_api_get_parental_control_detail(struct json_object *req_
     }
     json_object_object_add(data_obj, "pc_status", json_object_new_string(status_key));
     json_object_object_add(data_obj, "pc_status_key", json_object_new_string(status_key));
+    json_object_object_add(data_obj, "af_whitelist", json_object_new_int(af_whitelist ? 1 : 0));
+    json_object_object_add(data_obj, "mf_whitelist", json_object_new_int(mf_whitelist ? 1 : 0));
     json_object_object_add(data_obj, "appfilter_rules", appfilter_rules_out);
     json_object_object_add(data_obj, "macfilter_rules", macfilter_rules_out);
     if (root_obj) {
@@ -3160,6 +3235,8 @@ struct json_object *fwx_api_get_user_parental_control_rules(struct json_object *
     unsigned long long today_down_bytes = 0;
     int i;
     int len;
+    int af_whitelist = 0;
+    int mf_whitelist = 0;
 
     if (!data_obj || !list_obj) {
         if (data_obj) json_object_put(data_obj);
@@ -3176,61 +3253,69 @@ struct json_object *fwx_api_get_user_parental_control_rules(struct json_object *
     }
 
     if (target_mac[0] != '\0') {
+        af_whitelist = is_appfilter_whitelist_mac(target_mac);
+        mf_whitelist = is_macfilter_whitelist_mac(target_mac);
         pc_get_current_time_context(&current_weekday, &current_minutes);
         update_client_nickname();
         update_client_visiting_info();
         pc_get_today_usage_by_mac(target_mac, &today_online_time, &today_active_time,
                                   &today_up_bytes, &today_down_bytes);
 
-        app_rules_resp = fwx_api_get_filter_rules(NULL);
-        app_rules = pc_get_response_list(app_rules_resp, "list");
-        if (app_rules) {
-            len = json_object_array_length(app_rules);
-            for (i = 0; i < len; i++) {
-                struct json_object *rule_obj = json_object_array_get_idx(app_rules, i);
-                struct json_object *item_obj = NULL;
+        if (!af_whitelist) {
+            app_rules_resp = fwx_api_get_filter_rules(NULL);
+            app_rules = pc_get_response_list(app_rules_resp, "list");
+            if (app_rules) {
+                len = json_object_array_length(app_rules);
+                for (i = 0; i < len; i++) {
+                    struct json_object *rule_obj = json_object_array_get_idx(app_rules, i);
+                    struct json_object *item_obj = NULL;
 
-                if (!pc_is_rule_enabled(rule_obj) || !pc_is_rule_applicable(rule_obj, target_mac)) {
-                    continue;
-                }
+                    if (!pc_is_rule_enabled(rule_obj) || !pc_is_rule_applicable(rule_obj, target_mac)) {
+                        continue;
+                    }
 
-                item_obj = pc_build_appfilter_rule(rule_obj, current_weekday, current_minutes);
-                if (item_obj) {
-                    json_object_array_add(list_obj, item_obj);
-                }
-            }
-        }
-
-        mac_rules_resp = fwx_api_get_mac_filter_rules(NULL);
-        mac_rules = pc_get_response_list(mac_rules_resp, "list");
-        if (mac_rules) {
-            len = json_object_array_length(mac_rules);
-            for (i = 0; i < len; i++) {
-                struct json_object *rule_obj = json_object_array_get_idx(mac_rules, i);
-                struct json_object *item_obj = NULL;
-
-                if (!pc_is_rule_enabled(rule_obj) || !pc_is_rule_applicable(rule_obj, target_mac)) {
-                    continue;
-                }
-
-                item_obj = pc_build_macfilter_rule(rule_obj, today_active_time, today_up_bytes, today_down_bytes,
-                                                   current_weekday, current_minutes);
-                if (item_obj) {
-                    json_object_array_add(list_obj, item_obj);
+                    item_obj = pc_build_appfilter_rule(rule_obj, current_weekday, current_minutes);
+                    if (item_obj) {
+                        json_object_array_add(list_obj, item_obj);
+                    }
                 }
             }
         }
 
-        if (is_mac_in_blacklist_uci(target_mac)) {
-            struct json_object *blacklist_obj = pc_build_blacklist_rule(target_mac);
-            if (blacklist_obj) {
-                json_object_array_add(list_obj, blacklist_obj);
+        if (!mf_whitelist) {
+            mac_rules_resp = fwx_api_get_mac_filter_rules(NULL);
+            mac_rules = pc_get_response_list(mac_rules_resp, "list");
+            if (mac_rules) {
+                len = json_object_array_length(mac_rules);
+                for (i = 0; i < len; i++) {
+                    struct json_object *rule_obj = json_object_array_get_idx(mac_rules, i);
+                    struct json_object *item_obj = NULL;
+
+                    if (!pc_is_rule_enabled(rule_obj) || !pc_is_rule_applicable(rule_obj, target_mac)) {
+                        continue;
+                    }
+
+                    item_obj = pc_build_macfilter_rule(rule_obj, today_active_time, today_up_bytes, today_down_bytes,
+                                                       current_weekday, current_minutes);
+                    if (item_obj) {
+                        json_object_array_add(list_obj, item_obj);
+                    }
+                }
+            }
+
+            if (is_mac_in_blacklist_uci(target_mac)) {
+                struct json_object *blacklist_obj = pc_build_blacklist_rule(target_mac);
+                if (blacklist_obj) {
+                    json_object_array_add(list_obj, blacklist_obj);
+                }
             }
         }
     }
 
     sorted_list_obj = pc_sort_rule_list(list_obj);
     json_object_object_add(data_obj, "mac", json_object_new_string(target_mac));
+    json_object_object_add(data_obj, "af_whitelist", json_object_new_int(af_whitelist ? 1 : 0));
+    json_object_object_add(data_obj, "mf_whitelist", json_object_new_int(mf_whitelist ? 1 : 0));
     if (sorted_list_obj) {
         json_object_object_add(data_obj, "list", sorted_list_obj);
         json_object_put(list_obj);
@@ -6701,6 +6786,8 @@ struct json_object *fwx_api_get_user_basic_info(struct json_object *req_obj) {
             json_object_object_add(data_obj, "hostname", json_object_new_string(client->hostname));
             json_object_object_add(data_obj, "online", json_object_new_int(client->online));
             json_object_object_add(data_obj, "active", json_object_new_int(client->active));
+            json_object_object_add(data_obj, "af_whitelist", json_object_new_int(is_appfilter_whitelist_mac(client->mac) ? 1 : 0));
+            json_object_object_add(data_obj, "mf_whitelist", json_object_new_int(is_macfilter_whitelist_mac(client->mac) ? 1 : 0));
             json_object_object_add(data_obj, "up_rate", json_object_new_int(client->up_rate));
             json_object_object_add(data_obj, "down_rate", json_object_new_int(client->down_rate));
             json_object_object_add(data_obj, "rssi", json_object_new_int(client->rssi));
