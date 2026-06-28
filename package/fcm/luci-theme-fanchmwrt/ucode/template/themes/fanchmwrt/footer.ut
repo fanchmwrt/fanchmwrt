@@ -4,7 +4,7 @@
 		<footer>
 			<span>
 				Powered by
-				FanchmWrt
+				<a href="https://www.fanchmwrt.com" target="_blank" rel="noreferrer">FanchmWrt</a>
 				/
 				<a href="https://github.com/openwrt/luci" target="_blank" rel="noreferrer">
 					{{ version.luciname }} ({{ version.luciversion }})</a>
