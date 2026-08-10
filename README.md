@@ -1,10 +1,12 @@
-
-
 ## About
 FanchmWrt is an open-source enterprise-grade router system.  
 This project is based on OpenWrt and incorporates some firewall features.    
 Several popular device firmwares have been released and are available for download at [www.fanchmwrt.com](https://www.fanchmwrt.com).   
 You can also compile firmwares for other models yourself.
+
+## Important Notes  
+This project is free for personal use, you may redistribute the firmware or port the code to other projects, however,the copyright information in all source code files must be retained.  
+The App feature file of OAF is used to describe the protocol characteristics of an app, individuals may use it for free, but commercial use is prohibited,you can extract application characteristics yourself but not directly use the open-source feature files, the copyright for these files belongs to FanchmWrt.    
 
 ## Development
 You can compile the fanchmwrt firmware yourself, Ubuntu 22 is recommended.
