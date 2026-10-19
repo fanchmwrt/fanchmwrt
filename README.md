@@ -4,10 +4,6 @@ This project is based on OpenWrt and incorporates some firewall features.
 Several popular device firmwares have been released and are available for download at [www.fanchmwrt.com](https://www.fanchmwrt.com).   
 You can also compile firmwares for other models yourself.
 
-## Important Notes  
-This project is free for personal use, you may redistribute the firmware or port the code to other projects, however,the copyright information in all source code files must be retained.  
-The App feature file of OAF is used to describe the protocol characteristics of an app, individuals may use it for free, but commercial use is prohibited,you can extract application characteristics yourself but not directly use the open-source feature files, the copyright for these files belongs to FanchmWrt.    
-
 ## Development
 You can compile the fanchmwrt firmware yourself, Ubuntu 22 is recommended.
 Please include the repository address when re-releasing firmware.
@@ -47,3 +43,5 @@ FanchmWrt is licensed under GPL-2.0
 https://github.com/openwrt/openwrt
 
 
+## Important Notes  
+The source code for the parental control feature in this project is intended for personal use only. It may not be used on behalf of a company, nor may it be integrated into any commercial router products for sale. While you are permitted to sell it in a personal capacity, you must retain the FanchmWrt copyright information.
