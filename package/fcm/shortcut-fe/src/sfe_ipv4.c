@@ -16,6 +16,8 @@
  */
 
 #include <linux/module.h>
+#include <linux/timer.h>
+#include <linux/version.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/sysfs.h>
@@ -2873,7 +2875,11 @@ another_round:
  */
 static void sfe_ipv4_periodic_sync(struct timer_list *timer)
 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
+	struct sfe_ipv4 *si = timer_container_of(si, timer, timer);
+#else
 	struct sfe_ipv4 *si = from_timer(si, timer, timer);
+#endif
 	u64 now_jiffies;
 	int quota;
 	sfe_sync_rule_callback_t sync_rule_callback;
@@ -3682,7 +3688,11 @@ static void __exit sfe_ipv4_exit(void)
 	 */
 	sfe_ipv4_destroy_all_rules_for_dev(NULL);
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0)
+	timer_delete_sync(&si->timer);
+#else
 	del_timer_sync(&si->timer);
+#endif
 
 	unregister_chrdev(si->debug_dev, "sfe_ipv4");
 

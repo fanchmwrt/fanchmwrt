@@ -1405,35 +1405,38 @@ void dpi_http_proto(flow_info_t *flow)
 
 	data = flow->l4_data;
 	data_len = flow->l4_len;
-	if (data_len < MIN_HTTP_DATA_LEN)
+	if (!data || data_len < MIN_HTTP_DATA_LEN)
 	{
 		return;
 	}
 
-	for (i = 0; i < data_len; i++)
+	for (i = 0; i < data_len - 1; i++)
 	{
 		if (data[i] == 0x0d && data[i + 1] == 0x0a)
 		{
-			if (0 == memcmp(&data[start], "POST ", 5))
+			int line_len = i - start;
+
+			if (line_len >= 5 && 0 == memcmp(&data[start], "POST ", 5))
 			{
 				flow->http.match = AF_TRUE;
 				flow->http.method = HTTP_METHOD_POST;
 				flow->http.url_pos = data + start + 5;
 				flow->http.url_len = i - start - 5;
 			}
-			else if (0 == memcmp(&data[start], "GET ", 4))
+			else if (line_len >= 4 && 0 == memcmp(&data[start], "GET ", 4))
 			{
 				flow->http.match = AF_TRUE;
 				flow->http.method = HTTP_METHOD_GET;
 				flow->http.url_pos = data + start + 4;
 				flow->http.url_len = i - start - 4;
 			}
-			else if (0 == memcmp(&data[start], "Host:", 5))
+			else if (line_len >= 6 && 0 == memcmp(&data[start], "Host:", 5))
 			{
 				flow->http.host_pos = data + start + 6;
 				flow->http.host_len = i - start - 6;
 			}
-			if (data[i + 2] == 0x0d && data[i + 3] == 0x0a)
+			if (data_len - i >= 4 &&
+			    data[i + 2] == 0x0d && data[i + 3] == 0x0a)
 			{
 				flow->http.data_pos = data + i + 4;
 				flow->http.data_len = data_len - i - 4;
@@ -2215,6 +2218,7 @@ u_int32_t fwx_hook_bypass_handle(struct sk_buff *skb, struct net_device *dev)
 	spin_lock(&af_conn_lock);
    	conn = af_conn_find_and_add(flow.src, flow.dst, flow.sport, flow.dport, flow.l4_protocol);
 	if (!conn){
+		spin_unlock(&af_conn_lock);
 		return NF_ACCEPT;
 	}
 

@@ -13,6 +13,10 @@ obj-m += shortcut-fe-cm.o
 ccflags-$(SFE_SUPPORT_IPV6) += -DSFE_SUPPORT_IPV6
 ccflags-y += -Wall -Werror
 
+ifdef FWX_INCLUDE_DIR
+ccflags-y += -I$(FWX_INCLUDE_DIR)
+endif
+
 shortcut-fe-objs := \
 	sfe_ipv4.o
 

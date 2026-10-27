@@ -48,7 +48,7 @@ endef
 
 define Build/Compile
 	$(KERNEL_MAKE) M="$(PKG_BUILD_DIR)" SFE_SUPPORT_IPV6=y \
-		EXTRA_CFLAGS="-I$(STAGING_DIR)/usr/include/fwx" modules
+		FWX_INCLUDE_DIR="$(STAGING_DIR)/usr/include/fwx" modules
 endef
 
 $(eval $(call KernelPackage,shortcut-fe))
