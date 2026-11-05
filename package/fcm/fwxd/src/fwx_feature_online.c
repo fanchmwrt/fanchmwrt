@@ -33,6 +33,7 @@
 #define ONLINE_FEATURE_TEMP ONLINE_WORK_DIR "/feature.bin"
 #define ONLINE_ICON_DIR ONLINE_EXTRACT_DIR "/app_icons"
 #define ONLINE_ICON_TARGET "/www/luci-static/resources/app_icons"
+#define ONLINE_ICON_SPACE_RESERVE (5ULL * 1024U * 1024U)
 #define ONLINE_FAILED_ARCHIVE_PATH "/tmp/feature_online_failed.bin"
 #define ONLINE_COMMAND_STATUS "/tmp/feature_online_command.status"
 #define ONLINE_RESPONSE_MAX (256U * 1024U)
@@ -949,7 +950,7 @@ static int install_icons(void)
     if (statvfs("/overlay", &space) != 0)
         return 1;
     available = (unsigned long long)space.f_bavail * space.f_frsize;
-    if (required > available)
+    if (required + ONLINE_ICON_SPACE_RESERVE >= available)
         return 1;
     if (run_shell_command("mkdir -p " ONLINE_ICON_TARGET " && rm -rf " ONLINE_ICON_TARGET
                           "/* && cp -r " ONLINE_ICON_DIR "/. " ONLINE_ICON_TARGET "/", 60) != 0)

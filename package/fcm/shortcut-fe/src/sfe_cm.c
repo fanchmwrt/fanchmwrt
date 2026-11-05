@@ -18,7 +18,6 @@
 #include <linux/module.h>
 #include <linux/rtnetlink.h>
 #include <linux/notifier.h>
-#include <linux/ratelimit.h>
 #include <linux/mutex.h>
 #include <linux/kstrtox.h>
 #include <net/xfrm.h>
@@ -133,7 +132,7 @@ static inline void sfe_cm_incr_exceptions(sfe_cm_exception_t except)
 	spin_unlock_bh(&sc->lock);
 }
 
-static bool sfe_cm_fwx_accel_blocked(struct nf_conn *ct, const char *stage)
+static bool sfe_cm_fwx_accel_blocked(struct nf_conn *ct)
 {
 	u32 app_id;
 	u8 drop;
@@ -148,9 +147,6 @@ static bool sfe_cm_fwx_accel_blocked(struct nf_conn *ct, const char *stage)
 
 	sfe_cm_incr_exceptions(drop ? SFE_CM_EXCEPTION_FWX_DROP :
 			       SFE_CM_EXCEPTION_FWX_APPID);
-	pr_info_ratelimited("sfe_cm: bypass stage=%s appid=%u drop=%u proto=%u\n",
-			    stage, app_id, drop,
-			    ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.dst.protonum);
 	return true;
 }
 
@@ -431,7 +427,7 @@ static unsigned int sfe_cm_post_routing(struct sk_buff *skb, int is_v4)
 		return NF_ACCEPT;
 	}
 
-	if (sfe_cm_fwx_accel_blocked(ct, "postrouting")) {
+	if (sfe_cm_fwx_accel_blocked(ct)) {
 		sfe_cm_destroy_fwx_rule(ct);
 		return NF_ACCEPT;
 	}
@@ -943,7 +939,7 @@ static void sfe_cm_sync_rule(struct sfe_connection_sync *sis)
 	}
 
 	if (sis->reason == SFE_SYNC_REASON_STATS &&
-	    sfe_cm_fwx_accel_blocked(ct, "sync"))
+	    sfe_cm_fwx_accel_blocked(ct))
 		sfe_cm_destroy_fwx_rule(ct);
 
 	/*
